@@ -1,7 +1,6 @@
 import pandas as pd
 import re
 import numpy as np
-import plotly.graph_objects as go
 
 # 레벨별 프롬프트
 LEVEL_PROMPTS = {
@@ -104,6 +103,8 @@ def analyze_etf(etf_name, user_profile, price_df, info_df, perf_df, aum_df, ref_
         }
     # 날짜/중복/결측치 처리
     etf_price['date'] = pd.to_datetime(etf_price['basDt'], format='%Y%m%d', errors='coerce')
+    # 종가를 숫자형으로 변환 (문자열 → float)
+    etf_price['clpr'] = pd.to_numeric(etf_price['clpr'], errors='coerce')
     etf_price = etf_price.dropna(subset=['date', 'clpr'])
     etf_price = etf_price.drop_duplicates(subset=['date'])
     etf_price = etf_price.sort_values('date').reset_index(drop=True)

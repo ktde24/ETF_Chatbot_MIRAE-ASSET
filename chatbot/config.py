@@ -11,64 +11,67 @@ load_dotenv()
 class Config:
     """설정 클래스"""
 
-    # CLOVA API 설정
-    CLOVA_API_KEY = os.getenv("CLOVA_API_KEY", "")
-    CLOVA_API_URL = "https://clovax-api.ncloud.com/v1/chat/completions"
-    CLOVA_MAX_TOKENS = 1500
-    CLOVA_TEMPERATURE = 0.7
+    # 16가지 투자자 유형별 가중치 (추천 엔진에서 사용)
+    INVESTOR_TYPE_WEIGHTS = {
+        'ARSB': {'A': 0.4, 'R': 0.3, 'S': 0.2, 'B': 0.1},  # Auto-driven, Risk-averse, Story, Buy&Hold
+        'ARSE': {'A': 0.4, 'R': 0.3, 'S': 0.1, 'E': 0.2},  # Auto-driven, Risk-averse, Story, Portfolio Tuner
+        'ARTB': {'A': 0.4, 'R': 0.3, 'T': 0.2, 'B': 0.1},  # Auto-driven, Risk-averse, Technical, Buy&Hold
+        'ARTE': {'A': 0.4, 'R': 0.3, 'T': 0.1, 'E': 0.2},  # Auto-driven, Risk-averse, Technical, Portfolio Tuner
+        'AETB': {'A': 0.4, 'E': 0.3, 'T': 0.2, 'B': 0.1},  # Auto-driven, Enterprising, Technical, Buy&Hold
+        'AETE': {'A': 0.4, 'E': 0.3, 'T': 0.1, 'P': 0.2},  # Auto-driven, Enterprising, Technical, Portfolio Tuner
+        'AESB': {'A': 0.4, 'E': 0.3, 'S': 0.2, 'B': 0.1},  # Auto-driven, Enterprising, Story, Buy&Hold
+        'AESE': {'A': 0.4, 'E': 0.3, 'S': 0.1, 'P': 0.2},  # Auto-driven, Enterprising, Story, Portfolio Tuner
+        
+        'IRSB': {'I': 0.4, 'R': 0.3, 'S': 0.2, 'B': 0.1},  # Investigator, Risk-averse, Story, Buy&Hold
+        'IRSE': {'I': 0.4, 'R': 0.3, 'S': 0.1, 'E': 0.2},  # Investigator, Risk-averse, Story, Portfolio Tuner
+        'IRTB': {'I': 0.4, 'R': 0.3, 'T': 0.2, 'B': 0.1},  # Investigator, Risk-averse, Technical, Buy&Hold
+        'IRTE': {'I': 0.4, 'R': 0.3, 'T': 0.1, 'E': 0.2},  # Investigator, Risk-averse, Technical, Portfolio Tuner
+        'IETB': {'I': 0.4, 'E': 0.3, 'T': 0.2, 'B': 0.1},  # Investigator, Enterprising, Technical, Buy&Hold
+        'IETE': {'I': 0.4, 'E': 0.3, 'T': 0.1, 'P': 0.2},  # Investigator, Enterprising, Technical, Portfolio Tuner
+        'IESB': {'I': 0.4, 'E': 0.3, 'S': 0.2, 'B': 0.1},  # Investigator, Enterprising, Story, Buy&Hold
+        'IESE': {'I': 0.4, 'E': 0.3, 'S': 0.1, 'P': 0.2},  # Investigator, Enterprising, Story, Portfolio Tuner
+    }
 
     @classmethod
     def get_analysis_prompt(cls, user_profile=None):
-        base_prompt = """당신은 ETF 투자 전문 상담사입니다.
-        사용자의 투자 레벨에 맞춰 맞춤형 답변을 제공하세요.
-        답변에는 반드시 공식 데이터(수익률, 보수, 자산규모, 거래량 등)와 시세 데이터(수익률, 변동성, 최대낙폭)를 모두 활용하세요.
-        설명은 반드시 사용자의 레벨에 맞는 어투와 깊이로 작성하고, 예시, 비유, 실전 투자 팁도 포함하세요.
-        """
-        if user_profile:
-            level_info = cls.LEVEL_STYLES.get(user_profile.get('level', 'level2'), {})
-            level_prompt = f"""
-            사용자 레벨: {level_info.get('name', '투자 초보자')}
-            설명 스타일: {level_info.get('description', '기본 용어 설명과 함께 단계별 안내')}
-            (설명에는 반드시 공식 데이터와 시세 데이터 모두를 활용하고, 예시, 비유, 실전 투자 팁을 포함하세요.)
-            """
-            return base_prompt + level_prompt
-        return base_prompt
+        """ETF 분석용 기본 프롬프트"""
+        return """당신은 ETF 투자 전문 상담사입니다.
+사용자의 투자 레벨에 맞춰 맞춤형 답변을 제공하세요.
+답변에는 반드시 공식 데이터(수익률, 보수, 자산규모, 거래량 등)와 시세 데이터(수익률, 변동성, 최대낙폭)를 모두 활용하세요.
+설명은 반드시 사용자의 레벨에 맞는 어투와 깊이로 작성하고, 예시, 비유, 실전 투자 팁도 포함하세요."""
 
     @classmethod
     def get_recommend_prompt(cls, user_profile=None):
-        base_prompt = """당신은 ETF 투자 전문 상담사입니다. 
-        사용자의 투자 레벨과 유형에 맞춰 맞춤형 답변을 제공하세요.
-        답변에는 반드시 공식 데이터(수익률, 보수, 자산규모, 거래량 등)와 시세 데이터(수익률, 변동성, 최대낙폭)를 모두 활용하세요.
-        설명은 반드시 사용자의 레벨에 맞는 어투와 깊이로 작성하고, 예시, 비유, 실전 투자 팁도 포함하세요.
-        16가지 투자자 유형:
-        - ARSB: Auto-driven, Risk-averse, Story, Buy&Hold (자동추천, 안전추구, 스토리, 장기보유)
-        - ARSE: Auto-driven, Risk-averse, Story, Portfolio Tuner (자동추천, 안전추구, 스토리, 포트폴리오 조정)
-        - ARTB: Auto-driven, Risk-averse, Technical, Buy&Hold (자동추천, 안전추구, 기술적분석, 장기보유)
-        - ARTE: Auto-driven, Risk-averse, Technical, Portfolio Tuner (자동추천, 안전추구, 기술적분석, 포트폴리오 조정)
-        - AETB: Auto-driven, Enterprising, Technical, Buy&Hold (자동추천, 공격적, 기술적분석, 장기보유)
-        - AETE: Auto-driven, Enterprising, Technical, Portfolio Tuner (자동추천, 공격적, 기술적분석, 포트폴리오 조정)
-        - AESB: Auto-driven, Enterprising, Story, Buy&Hold (자동추천, 공격적, 스토리, 장기보유)
-        - AESE: Auto-driven, Enterprising, Story, Portfolio Tuner (자동추천, 공격적, 스토리, 포트폴리오 조정)
-        - IRSB: Investigator, Risk-averse, Story, Buy&Hold (직접분석, 안전추구, 스토리, 장기보유)
-        - IRSE: Investigator, Risk-averse, Story, Portfolio Tuner (직접분석, 안전추구, 스토리, 포트폴리오 조정)
-        - IRTB: Investigator, Risk-averse, Technical, Buy&Hold (직접분석, 안전추구, 기술적분석, 장기보유)
-        - IRTE: Investigator, Risk-averse, Technical, Portfolio Tuner (직접분석, 안전추구, 기술적분석, 포트폴리오 조정)
-        - IETB: Investigator, Enterprising, Technical, Buy&Hold (직접분석, 공격적, 기술적분석, 장기보유)
-        - IETE: Investigator, Enterprising, Technical, Portfolio Tuner (직접분석, 공격적, 기술적분석, 포트폴리오 조정)
-        - IESB: Investigator, Enterprising, Story, Buy&Hold (직접분석, 공격적, 스토리, 장기보유)
-        - IESE: Investigator, Enterprising, Story, Portfolio Tuner (직접분석, 공격적, 스토리, 포트폴리오 조정)
-        """
-        if user_profile:
-            level_info = cls.LEVEL_STYLES.get(user_profile.get('level', 'level2'), {})
-            level_prompt = f"""
-            사용자 레벨: {level_info.get('name', '투자 초보자')}
-            설명 스타일: {level_info.get('description', '기본 용어 설명과 함께 단계별 안내')}
-            (설명에는 반드시 공식 데이터와 시세 데이터 모두를 활용하고, 예시, 비유, 실전 투자 팁을 포함하세요.)
-            """
-            type_prompt = "투자자 유형:\n"
-            for category, value in user_profile.get('types', {}).items():
-                if value in cls.INVESTOR_TYPES.get(category, {}):
-                    type_info = cls.INVESTOR_TYPES[category][value]
-                    type_prompt += f"- {category}: {type_info['name']} ({type_info['description']})\n"
-            return base_prompt + level_prompt + type_prompt
-        return base_prompt
+        """ETF 추천용 프롬프트"""
+        return """당신은 ETF 투자 전문 상담사입니다. 
+사용자의 투자 레벨과 유형에 맞춰 맞춤형 답변을 제공하세요.
+답변에는 반드시 공식 데이터(수익률, 보수, 자산규모, 거래량 등)와 시세 데이터(수익률, 변동성, 최대낙폭)를 모두 활용하세요.
+설명은 반드시 사용자의 레벨에 맞는 어투와 깊이로 작성하고, 예시, 비유, 실전 투자 팁도 포함하세요.
+
+16가지 투자자 유형:
+- ARSB: 자동추천형 + 안전추구형 + 스토리형 + 장기보유형
+- ARSE: 자동추천형 + 안전추구형 + 스토리형 + 포트폴리오조정형  
+- ARTB: 자동추천형 + 안전추구형 + 기술분석형 + 장기보유형
+- ARTE: 자동추천형 + 안전추구형 + 기술분석형 + 포트폴리오조정형
+- AETB: 자동추천형 + 공격투자형 + 기술분석형 + 장기보유형
+- AETE: 자동추천형 + 공격투자형 + 기술분석형 + 포트폴리오조정형
+- AESB: 자동추천형 + 공격투자형 + 스토리형 + 장기보유형
+- AESE: 자동추천형 + 공격투자형 + 스토리형 + 포트폴리오조정형
+- IRSB: 직접분석형 + 안전추구형 + 스토리형 + 장기보유형
+- IRSE: 직접분석형 + 안전추구형 + 스토리형 + 포트폴리오조정형
+- IRTB: 직접분석형 + 안전추구형 + 기술분석형 + 장기보유형
+- IRTE: 직접분석형 + 안전추구형 + 기술분석형 + 포트폴리오조정형
+- IETB: 직접분석형 + 공격투자형 + 기술분석형 + 장기보유형
+- IETE: 직접분석형 + 공격투자형 + 기술분석형 + 포트폴리오조정형
+- IESB: 직접분석형 + 공격투자형 + 스토리형 + 장기보유형
+- IESE: 직접분석형 + 공격투자형 + 스토리형 + 포트폴리오조정형"""
+
+    @classmethod
+    def get_system_prompt(cls, user_profile=None):
+        """시스템 프롬프트 (clova_client에서 사용) - get_analysis_prompt와 동일"""
+        return cls.get_analysis_prompt(user_profile)
+    
+    @staticmethod
+    def get_level_number(user_level: str) -> int:
+        """레벨 문자열을 숫자로 변환하는 유틸리티 함수"""
+        return int(user_level[-1]) if user_level.startswith('level') else 2

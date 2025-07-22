@@ -22,6 +22,8 @@ ETF2/
 *.pkl
 *.faiss
 vector_db/
+chatbot/vector_db/
+chatbot/vector_searcher.py
 data/ETF_시세_데이터_*.csv
 data/ETF_시세_데이터_*.pkl
 data/ETF_시세_데이터_*.faiss
