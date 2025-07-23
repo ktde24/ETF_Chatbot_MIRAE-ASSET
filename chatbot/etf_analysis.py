@@ -1,246 +1,523 @@
-import pandas as pd
-import re
-import numpy as np
+"""
+ETF 분석 모듈
+- 개별 ETF에 대한 종합적 분석
+- 시세 데이터 기반 수익률, 변동성, 최대낙폭 계산
+- 공식 데이터(보수, 자산규모, 거래량) 통합 분석
+- 사용자 레벨별 맞춤 분석 및 시각화
+"""
 
-# 레벨별 프롬프트
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import re
+import logging
+from typing import Dict, Any, Optional, Tuple
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# 사용자 레벨별 프롬프트 설정
+# =============================================================================
 LEVEL_PROMPTS = {
     1: "- Level 1: 유치원/초1 스타일로 아주 쉽게, 비유와 예시 위주로 3줄 이하로 요약하세요.",
     2: "- Level 2: 중고등학생도 이해 가능한 쉬운 말로, 핵심 개념과 이유를 포함해 3줄 이하로 요약하세요.",
     3: "- Level 3: 고급 분석과 실전 활용 관점으로, 데이터 기반·비교·수치 등을 포함해 3줄 이하로 요약하세요."
 }
 
-def normalize_etf_name(name):
-    """ETF 종목명을 정규화"""
+
+# =============================================================================
+# 유틸리티 함수들
+# =============================================================================
+
+def normalize_etf_name(name: str) -> str:
+    """
+    ETF 종목명 정규화 (공백 제거, 소문자 변환)
+    
+    Args:
+        name: 원본 ETF명
+    
+    Returns:
+        정규화된 ETF명
+    """
+    if not name:
+        return ""
     return re.sub(r'\s+', '', str(name)).lower()
 
-def extract_etf_name(user_input, info_df):
-    candidates = list(info_df['종목명'])
+def safe_float(value: Any) -> Optional[float]:
+    """
+    안전한 float 변환 (None, NaN, 빈 문자열 처리)
+    
+    Args:
+        value: 변환할 값
+    
+    Returns:
+        변환된 float 값 또는 None
+    """
+    try:
+        if value is None or str(value).strip() == '' or str(value).lower() == 'nan':
+            return None
+        return float(str(value).replace(',', '').strip())
+    except (ValueError, TypeError):
+        return None
+
+def safe_format(value: Any, suffix: str = "") -> str:
+    """
+    안전한 값 포맷팅 (None 처리)
+    
+    Args:
+        value: 포맷팅할 값
+        suffix: 접미사 (%, 원 등)
+    
+    Returns:
+        포맷팅된 문자열
+    """
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "N/A"
+    try:
+        return f"{float(value):.2f}{suffix}"
+    except (ValueError, TypeError):
+        return str(value)
+
+def extract_etf_name(user_input: str, info_df: pd.DataFrame) -> str:
+    """
+    사용자 입력에서 정확한 ETF명 추출
+    
+    Args:
+        user_input: 사용자 입력 텍스트
+        info_df: ETF 정보 DataFrame
+    
+    Returns:
+        매칭된 ETF명 또는 원본 입력
+    """
+    if info_df.empty:
+        return user_input.strip()
+    
+    candidates = list(info_df['종목명'].dropna())
     norm_input = normalize_etf_name(user_input)
+    
+    # 1단계: 정확한 매칭
     for name in candidates:
         if normalize_etf_name(name) == norm_input:
             return name
+    
+    # 2단계: 포함 매칭
     for name in candidates:
-        if normalize_etf_name(name) in norm_input:
+        if norm_input in normalize_etf_name(name):
             return name
-    cleaned = re.sub(r'(분석|설명|추천|해줘|알려줘|비교|차트|정보|ETF)', '', user_input, flags=re.I).strip()
-    norm_cleaned = normalize_etf_name(cleaned)
+    
+    # 3단계: 분석 키워드 제거
+    cleaned_input = re.sub(
+        r'(분석|설명|추천|해줘|알려줘|비교|차트|정보|ETF)', 
+        '', user_input, flags=re.I
+    ).strip()
+    
+    norm_cleaned = normalize_etf_name(cleaned_input)
     for name in candidates:
         if normalize_etf_name(name) == norm_cleaned:
             return name
+    
     for name in candidates:
-        if normalize_etf_name(name) in norm_cleaned:
+        if norm_cleaned in normalize_etf_name(name):
             return name
+    
     return user_input.strip()  # fallback
 
-def find_etf_row(df, etf_name):
+def find_etf_row(df: pd.DataFrame, etf_name: str) -> Optional[pd.Series]:
+    """
+    DataFrame에서 ETF 정보 검색
+    
+    Args:
+        df: 검색할 DataFrame
+        etf_name: ETF명
+    
+    Returns:
+        매칭된 행(Series) 또는 None
+    """
+    if df is None or df.empty:
+        return None
+    
     norm_input = normalize_etf_name(etf_name)
-    # 1. 종목명에서 찾기
+    
+    # 1단계: 종목명으로 정확한 매칭
     for idx, row in df.iterrows():
         if normalize_etf_name(row.get('종목명', '')) == norm_input:
             return row
-    # 2. 종목코드에서 찾기
+    
+    # 2단계: 종목코드로 매칭
     for idx, row in df.iterrows():
-        if normalize_etf_name(row.get('종목코드', '')) == norm_input:
+        if normalize_etf_name(str(row.get('종목코드', ''))) == norm_input:
             return row
-    # 3. 부분일치(포함)도 허용
+    
+    # 3단계: 부분 매칭
     for idx, row in df.iterrows():
         if norm_input in normalize_etf_name(row.get('종목명', '')):
             return row
+    
     return None
 
-def safe_fmt(val, suffix=""):
+def get_exact_etf_info(user_input: str, info_df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
     """
-    None-safe 포맷팅 함수. None이면 N/A, 아니면 소수점 2자리로 포맷
+    정확한 ETF명과 종목코드 조회
+    
+    Args:
+        user_input: 사용자 입력
+        info_df: ETF 정보 DataFrame
+    
+    Returns:
+        (ETF명, 종목코드) 튜플
     """
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return "N/A"
-    try:
-        return f"{float(val):.2f}{suffix}"
-    except (ValueError, TypeError):
-        return str(val)
-
-def safe_float(val):
-    """
-    문자열, None, NaN 등 robust하게 float 변환. 변환 불가시 None 반환.
-    """
-    try:
-        if val is None or str(val).strip() == '' or str(val).lower() == 'nan':
-            return None
-        return float(str(val).replace(',', '').strip())
-    except Exception:
-        return None
-
-def get_exact_etf_info(user_input, info_df):
+    if info_df.empty:
+        return None, None
+    
     norm_input = normalize_etf_name(user_input)
+    
+    # 정확한 매칭
     for idx, row in info_df.iterrows():
         if normalize_etf_name(row['종목명']) == norm_input:
             return row['종목명'], str(row['종목코드'])
-    # 부분일치 fallback
+    
+    # 부분 매칭 fallback
     for idx, row in info_df.iterrows():
         if norm_input in normalize_etf_name(row['종목명']):
             return row['종목명'], str(row['종목코드'])
+    
     return None, None
 
-def analyze_etf(etf_name, user_profile, price_df, info_df, perf_df, aum_df, ref_idx_df, risk_df):
+# =============================================================================
+# 핵심 분석 함수
+# =============================================================================
+
+def analyze_etf(
+    etf_name: str,
+    user_profile: Dict[str, Any],
+    price_df: pd.DataFrame,
+    info_df: pd.DataFrame,
+    perf_df: pd.DataFrame,
+    aum_df: pd.DataFrame,
+    ref_idx_df: pd.DataFrame,
+    risk_df: pd.DataFrame
+) -> Dict[str, Any]:
     """
-    입력 ETF명 → 상품검색.csv에서 종목명/코드 찾기 → 시세 데이터는 종목코드로만 조회
+    ETF 종합 분석 수행
+    
+    Args:
+        etf_name: ETF명
+        user_profile: 사용자 프로필 (level, investor_type)
+        price_df: 가격 데이터
+        info_df: 기본 정보
+        perf_df: 수익률/보수 정보
+        aum_df: 자산규모/유동성 정보
+        ref_idx_df: 참고지수 정보
+        risk_df: 위험도 정보
+    
+    Returns:
+        ETF 분석 결과 딕셔너리
     """
-    # 1. 상품검색.csv에서 정확한 종목명/코드 찾기
-    exact_name, code = get_exact_etf_info(etf_name, info_df)
-    if not exact_name or not code:
-        return {
-            'ETF명': etf_name, '기본정보': {}, '수익률/보수': {}, '자산규모/유동성': {},
-            '참고지수': {}, '위험': {}, '시세분석': {},
-            '설명': f"'{etf_name}'에 해당하는 ETF를 찾을 수 없습니다. ETF명을 다시 확인해 주세요."
+    try:
+        # 1단계: 정확한 ETF 정보 조회
+        exact_name, etf_code = get_exact_etf_info(etf_name, info_df)
+        
+        if not exact_name or not etf_code:
+            logger.warning(f"ETF를 찾을 수 없습니다: {etf_name}")
+            return _create_error_result(etf_name, "ETF를 찾을 수 없습니다. ETF명을 다시 확인해 주세요.")
+        
+        # 2단계: 시세 데이터 분석
+        market_analysis = _analyze_market_data(price_df, etf_code)
+        
+        if market_analysis is None:
+            logger.warning(f"시세 데이터를 찾을 수 없습니다: {exact_name}")
+            return _create_error_result(exact_name, "시세 데이터가 없습니다. ETF 시세 파일을 확인해 주세요.")
+        
+        # 3단계: 공식 데이터 수집
+        official_data = _collect_official_data(exact_name, info_df, perf_df, aum_df, ref_idx_df, risk_df)
+        
+        # 4단계: 결과 통합
+        result = {
+            'ETF명': exact_name,
+            '기본정보': official_data['basic'],
+            '수익률/보수': official_data['performance'],
+            '자산규모/유동성': official_data['aum'],
+            '참고지수': official_data['reference'],
+            '위험': official_data['risk'],
+            '시세분석': market_analysis
         }
-    # 2. 시세 데이터는 종목코드로만 조회
-    etf_price = price_df[price_df['srtnCd'].astype(str) == str(code)].copy()
-    if etf_price.empty:
+        
+        # 시세 분석 불가 안내 추가
+        if _is_market_analysis_insufficient(market_analysis):
+            result['시세분석_안내'] = "시세 데이터가 부족하거나, 수익률/변동성/최대낙폭을 계산할 수 없습니다."
+        
+        logger.info(f"ETF 분석 완료: {exact_name}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"ETF 분석 중 오류 발생: {e}")
+        return _create_error_result(etf_name, f"분석 중 오류가 발생했습니다: {str(e)}")
+
+def _analyze_market_data(price_df: pd.DataFrame, etf_code: str) -> Optional[Dict[str, Any]]:
+    """
+    시세 데이터 분석 (수익률, 변동성, 최대낙폭)
+    
+    Args:
+        price_df: 가격 데이터
+        etf_code: ETF 종목코드
+    
+    Returns:
+        시세 분석 결과 또는 None
+    """
+    try:
+        # ETF 시세 데이터 추출
+        etf_prices = price_df[price_df['srtnCd'].astype(str) == str(etf_code)].copy()
+        
+        if etf_prices.empty:
+            return None
+        
+        # 데이터 전처리
+        etf_prices['date'] = pd.to_datetime(etf_prices['basDt'], format='%Y%m%d', errors='coerce')
+        etf_prices['clpr'] = pd.to_numeric(etf_prices['clpr'], errors='coerce')
+        
+        # 결측치 및 중복 제거
+        etf_prices = etf_prices.dropna(subset=['date', 'clpr'])
+        etf_prices = etf_prices.drop_duplicates(subset=['date'])
+        etf_prices = etf_prices.sort_values('date').reset_index(drop=True)
+        
+        if len(etf_prices) < 2:
+            return None
+        
+        # 수익률 계산
+        returns = {}
+        for period, days in [('3개월', 63), ('1년', 252)]:
+            if len(etf_prices) >= days + 1:
+                start_price = etf_prices.iloc[-(days+1)]['clpr']
+                end_price = etf_prices.iloc[-1]['clpr']
+                if start_price > 0:
+                    returns[f'{period} 수익률'] = ((end_price / start_price) - 1) * 100
+                else:
+                    returns[f'{period} 수익률'] = None
+            else:
+                returns[f'{period} 수익률'] = None
+        
+        # 변동성 계산 (일간 수익률의 표준편차)
+        price_changes = etf_prices['clpr'].pct_change().dropna()
+        volatility = price_changes.std() * 100 * np.sqrt(252) if len(price_changes) > 1 else None  # 연환산
+        
+        # 최대낙폭 계산
+        rolling_max = etf_prices['clpr'].cummax()
+        drawdown = (etf_prices['clpr'] - rolling_max) / rolling_max
+        max_drawdown = drawdown.min() * 100 if not drawdown.empty else None
+        
         return {
-            'ETF명': exact_name, '기본정보': {}, '수익률/보수': {}, '자산규모/유동성': {},
-            '참고지수': {}, '위험': {}, '시세분석': {},
-            '설명': f"'{exact_name}'에 대한 시세 데이터가 없습니다. ETF 시세 파일을 확인해 주세요."
-        }
-    # 날짜/중복/결측치 처리
-    etf_price['date'] = pd.to_datetime(etf_price['basDt'], format='%Y%m%d', errors='coerce')
-    # 종가를 숫자형으로 변환 (문자열 → float)
-    etf_price['clpr'] = pd.to_numeric(etf_price['clpr'], errors='coerce')
-    etf_price = etf_price.dropna(subset=['date', 'clpr'])
-    etf_price = etf_price.drop_duplicates(subset=['date'])
-    etf_price = etf_price.sort_values('date').reset_index(drop=True)
-
-    returns, volatility, max_drawdown = {}, None, None
-    시세분석_불가 = False
-    if not etf_price.empty:
-        def get_return(days):
-            if len(etf_price) < days + 1: return None
-            return (etf_price.iloc[-1]['clpr'] / etf_price.iloc[-days-1]['clpr'] - 1) * 100
-        returns = {'3개월': get_return(63), '1년': get_return(252)}
-        volatility = etf_price['clpr'].pct_change().std() * 100 if len(etf_price) > 1 else None
-        roll_max = etf_price['clpr'].cummax()
-        roll_max_safe = roll_max.replace(0, np.nan)
-        drawdown = (etf_price['clpr'] - roll_max_safe) / roll_max_safe
-        min_drawdown = drawdown.min() if not drawdown.empty else None
-        if min_drawdown is not None and not pd.isna(min_drawdown):
-            max_drawdown = min_drawdown * 100
-        else:
-            max_drawdown = None
-        # 시세분석이 모두 None이면 안내 플래그
-        if all(x is None for x in [returns.get('3개월'), returns.get('1년'), volatility, max_drawdown]):
-            시세분석_불가 = True
-    else:
-        시세분석_불가 = True
-
-    # 기타 정보는 항상 반환
-    info_row = find_etf_row(info_df, exact_name)
-    basic_info = dict(info_row) if info_row is not None else {}
-    perf_row = find_etf_row(perf_df, exact_name)
-    perf_info = dict(perf_row) if perf_row is not None else {}
-    aum_row = find_etf_row(aum_df, exact_name)
-    aum_info = dict(aum_row) if aum_row is not None else {}
-    ref_row = find_etf_row(ref_idx_df, exact_name)
-    ref_info = dict(ref_row) if ref_row is not None else {}
-    risk_row = find_etf_row(risk_df, exact_name)
-    risk_info = dict(risk_row) if risk_row is not None else {}
-
-    result = {
-        'ETF명': exact_name,
-        '기본정보': basic_info,
-        '수익률/보수': perf_info,
-        '자산규모/유동성': aum_info,
-        '참고지수': ref_info,
-        '위험': risk_info,
-        '시세분석': {
-            '3개월 수익률': returns.get('3개월'),
-            '1년 수익률': returns.get('1년'),
+            **returns,
             '변동성': volatility,
             '최대낙폭': max_drawdown
         }
+        
+    except Exception as e:
+        logger.error(f"시세 데이터 분석 오류: {e}")
+        return None
+
+def _collect_official_data(
+    etf_name: str,
+    info_df: pd.DataFrame,
+    perf_df: pd.DataFrame,
+    aum_df: pd.DataFrame,
+    ref_idx_df: pd.DataFrame,
+    risk_df: pd.DataFrame
+) -> Dict[str, Dict]:
+    """
+    공식 데이터 수집 (각 CSV 파일에서)
+    
+    Args:
+        etf_name: ETF명
+        *_df: 각종 데이터 DataFrame들
+    
+    Returns:
+        공식 데이터 딕셔너리
+    """
+    info_row = find_etf_row(info_df, etf_name)
+    perf_row = find_etf_row(perf_df, etf_name)
+    aum_row = find_etf_row(aum_df, etf_name)
+    ref_row = find_etf_row(ref_idx_df, etf_name)
+    risk_row = find_etf_row(risk_df, etf_name)
+    return {
+        'basic': dict(info_row) if info_row is not None else {},
+        'performance': dict(perf_row) if perf_row is not None else {},
+        'aum': dict(aum_row) if aum_row is not None else {},
+        'reference': dict(ref_row) if ref_row is not None else {},
+        'risk': dict(risk_row) if risk_row is not None else {}
     }
-    if 시세분석_불가:
-        result['시세분석_안내'] = "시세 데이터가 부족하거나, 수익률/변동성/최대낙폭을 계산할 수 없습니다."
-    return result
 
-def plot_etf_bar(etf_info):
-    # 바 차트: 수익률, 변동성, 최대낙폭, 자산규모 등
-    bar_metrics = ['3개월 수익률', '1년 수익률', '변동성', '최대낙폭']
-    bar_labels = ['3개월 수익률(%)', '1년 수익률(%)', '변동성(%)', '최대낙폭(%)']
-    y = [etf_info['시세분석'].get(m) if etf_info['시세분석'].get(m) is not None else 0 for m in bar_metrics]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=bar_labels,
-        y=y,
-        marker_color=['#636EFA', '#EF553B', '#00CC96', '#AB63FA'],
-        text=[f"{v:.2f}" if v is not None else "N/A" for v in y],
-        textposition='auto',
-    ))
-    fig.update_layout(
-        title="ETF 주요 지표 바 차트",
-        xaxis_title="지표",
-        yaxis_title="값",
-        template="plotly_white",
-        font=dict(size=14),
-        plot_bgcolor="#F9F9F9",
-        paper_bgcolor="#F9F9F9"
-    )
-    return fig
+def _create_error_result(etf_name: str, error_message: str) -> Dict[str, Any]:
+    """에러 결과 생성"""
+    return {
+        'ETF명': etf_name,
+        '기본정보': {},
+        '수익률/보수': {},
+        '자산규모/유동성': {},
+        '참고지수': {},
+        '위험': {},
+        '시세분석': {},
+        '설명': error_message
+    }
 
-def plot_etf_summary_bar(etf_info):
+def _is_market_analysis_insufficient(market_analysis: Dict[str, Any]) -> bool:
+    """시세 분석이 불충분한지 확인"""
+    if not market_analysis:
+        return True
+    
+    key_metrics = ['3개월 수익률', '1년 수익률', '변동성', '최대낙폭']
+    return all(market_analysis.get(metric) is None for metric in key_metrics)
+
+# =============================================================================
+# 시각화 함수들
+# =============================================================================
+
+def plot_etf_bar(etf_info: Dict[str, Any]) -> go.Figure:
     """
-    공식 수익률/보수/자산규모/거래량 등 바 차트로 시각화
-    데이터가 일부만 있어도 있는 것만 시각화
+    ETF 시세 분석 바 차트 생성
+    
+    Args:
+        etf_info: ETF 분석 정보
+    
+    Returns:
+        Plotly Figure 객체
     """
-    labels = []
-    values = []
-    colors = ['#636EFA', '#00BFFF', '#00CC96', '#FFD700']  
-    perf = etf_info.get('수익률/보수', {})
-    aum = etf_info.get('자산규모/유동성', {})
-    v = safe_float(perf.get('수익률'))
-    if v is not None:
-        labels.append('공식 1년 수익률(%)')
-        values.append(v)
-    v = safe_float(perf.get('총 보수'))
-    if v is not None:
-        labels.append('총보수(%)')
-        values.append(v)
-    v = safe_float(aum.get('평균 순자산총액'))
-    if v is not None:
-        labels.append('평균 순자산총액(백만원)')
-        values.append(v)
-    v = safe_float(aum.get('평균 거래량'))
-    if v is not None:
-        labels.append('평균 거래량')
-        values.append(v)
-    fig = go.Figure()
-    if labels:
+    try:
+        market_data = etf_info.get('시세분석', {})
+        
+        # 차트 데이터 준비
+        metrics = ['3개월 수익률', '1년 수익률', '변동성', '최대낙폭']
+        labels = ['3개월 수익률(%)', '1년 수익률(%)', '변동성(%)', '최대낙폭(%)']
+        values = [market_data.get(metric, 0) or 0 for metric in metrics]
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+        
+        # 바 차트 생성
+        fig = go.Figure()
         fig.add_trace(go.Bar(
             x=labels,
             y=values,
-            marker=dict(
-                color=colors[:len(labels)],
-                line=dict(color='#222', width=1.5),
-            ),
-            text=[f"<b>{safe_fmt(v)}</b>" for v in values],
-            textposition='outside',
-            width=0.5,
+            marker_color=colors,
+            text=[safe_format(v, '%') for v in values],
+            textposition='auto',
+            hovertemplate='%{x}: <b>%{y:.2f}%</b><extra></extra>'
         ))
-    else:
-        fig.add_annotation(text="공식 지표 데이터 부족",
-                           xref="paper", yref="paper",
-                           showarrow=False, font=dict(size=16))
-    fig.update_layout(
-        title="ETF 공식 지표 요약 바 차트",
-        xaxis_title="지표",
-        yaxis_title="값",
-        template="plotly_white",
-        font=dict(size=15, family="Pretendard, NanumGothic, Arial"),
-        plot_bgcolor="#F9F9F9",
-        paper_bgcolor="#F9F9F9",
-        margin=dict(l=30, r=30, t=60, b=30),
-        xaxis=dict(tickfont=dict(size=13)),
-        yaxis=dict(tickfont=dict(size=13)),
+        
+        # 레이아웃 설정
+        fig.update_layout(
+            title=f"📈 {etf_info.get('ETF명', 'ETF')} 시세 분석",
+            xaxis_title="분석 지표",
+            yaxis_title="값 (%)",
+            template="plotly_white",
+            font=dict(size=14, family="Pretendard, NanumGothic, Arial"),
+            plot_bgcolor="#F8F9FA",
+            paper_bgcolor="#F8F9FA",
+            height=450,
+            margin=dict(l=50, r=50, t=80, b=50)
+        )
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"시세 분석 차트 생성 오류: {e}")
+        return _create_empty_chart("시세 분석 차트 생성 중 오류가 발생했습니다.")
+
+def plot_etf_summary_bar(etf_info: Dict[str, Any]) -> go.Figure:
+    """
+    ETF 공식 데이터 요약 바 차트 생성
+    
+    Args:
+        etf_info: ETF 분석 정보
+    
+    Returns:
+        Plotly Figure 객체
+    """
+    try:
+        performance_data = etf_info.get('수익률/보수', {})
+        aum_data = etf_info.get('자산규모/유동성', {})
+        
+        # 데이터 수집 및 검증
+        chart_data = []
+        
+        # 공식 1년 수익률
+        official_return = safe_float(performance_data.get('수익률'))
+        if official_return is not None:
+            chart_data.append(('공식 1년 수익률(%)', official_return, '#1f77b4'))
+        
+        # 총 보수
+        total_fee = safe_float(performance_data.get('총 보수'))
+        if total_fee is not None:
+            chart_data.append(('총보수(%)', total_fee, '#ff7f0e'))
+        
+        # 평균 순자산총액 (억원 단위로 변환)
+        avg_aum = safe_float(aum_data.get('평균 순자산총액'))
+        if avg_aum is not None:
+            chart_data.append(('평균 자산규모(억원)', avg_aum / 100, '#2ca02c'))
+        
+        # 평균 거래량 (천주 단위로 변환)
+        avg_volume = safe_float(aum_data.get('평균 거래량'))
+        if avg_volume is not None:
+            chart_data.append(('평균 거래량(천주)', avg_volume / 1000, '#d62728'))
+        
+        # 차트 생성
+        fig = go.Figure()
+        
+        if chart_data:
+            labels, values, colors = zip(*chart_data)
+            
+            fig.add_trace(go.Bar(
+                x=list(labels),
+                y=list(values),
+                marker=dict(
+                    color=list(colors),
+                    line=dict(color='#333', width=1)
+                ),
+                text=[safe_format(v) for v in values],
+                textposition='outside',
+                hovertemplate='%{x}: <b>%{y:,.2f}</b><extra></extra>'
+            ))
+        else:
+            # 데이터가 없는 경우
+            fig.add_annotation(
+                text="데이터가 부족합니다",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5,
+                showarrow=False,
+                font=dict(size=16, color="gray")
+            )
+        
+        # 레이아웃 설정
+        fig.update_layout(
+            title=f"{etf_info.get('ETF명', 'ETF')} 공식 데이터 요약",
+            xaxis_title="공식 지표",
+            yaxis_title="값",
+            template="plotly_white",
+            font=dict(size=14, family="Pretendard, NanumGothic, Arial"),
+            plot_bgcolor="#F8F9FA",
+            paper_bgcolor="#F8F9FA",
+            height=450,
+            margin=dict(l=50, r=50, t=80, b=50),
+            showlegend=False
+        )
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"공식 데이터 차트 생성 오류: {e}")
+        return _create_empty_chart("공식 데이터 차트 생성 중 오류가 발생했습니다.")
+
+def _create_empty_chart(message: str) -> go.Figure:
+    """빈 차트 생성 (오류 시 사용)"""
+    fig = go.Figure()
+    fig.add_annotation(
+        text=f" {message}",
+        xref="paper", yref="paper",
+        x=0.5, y=0.5,
+        showarrow=False,
+        font=dict(size=16, color="red")
     )
-    fig.update_traces(
-        hovertemplate='%{x}: <b>%{y:,.2f}</b>'
+    fig.update_layout(
+        template="plotly_white",
+        height=400,
+        margin=dict(l=50, r=50, t=50, b=50)
     )
     return fig

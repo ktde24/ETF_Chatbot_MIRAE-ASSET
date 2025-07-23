@@ -1,4 +1,19 @@
-import sys, os
+"""
+ETF 점수 캐시 생성 스크립트
+- 모든 ETF에 대해 레벨별, 투자자 유형별 점수를 사전 계산
+- risk_tier 기반 레벨별 필터링 적용
+- 멀티프로세싱으로 성능 최적화
+- 48,000개 조합 (995개 ETF × 3레벨 × 16유형) 캐시 생성
+"""
+
+import sys
+import os
+import time
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Any, Tuple, List
+
+# 프로젝트 루트 경로 추가
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
@@ -6,161 +21,395 @@ import numpy as np
 from chatbot.recommendation_engine import ETFRecommendationEngine
 from chatbot.etf_analysis import analyze_etf
 from chatbot.config import Config
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-print("=" * 60)
-print("ETF 점수 캐시 생성 시작")
-print("=" * 60)
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-start_time = time.time()
-
-print("데이터 로딩 시작")
-# 데이터 로드
-info_df = pd.read_csv('data/상품검색.csv', encoding='utf-8-sig')
-price_df = pd.read_csv('data/ETF_시세_데이터_20240722_20250722.csv', encoding='utf-8-sig', 
-                      dtype={'srtnCd': str, 'basDt': str, 'clpr': float}, low_memory=False)
-perf_df = pd.read_csv('data/수익률 및 총보수(기간).csv', encoding='utf-8-sig')
-aum_df = pd.read_csv('data/자산규모 및 유동성(기간).csv', encoding='utf-8-sig')
-ref_idx_df = pd.read_csv('data/참고지수(기간).csv', encoding='utf-8-sig')
-risk_df = pd.read_csv('data/투자위험(기간).csv', encoding='utf-8-sig')
-
-print(f"ETF 개수: {len(info_df)}")
-print(f"시세 데이터: {len(price_df):,} 행")
-print("데이터 로딩 완료")
-
-# 전체 데이터 처리
-INVESTOR_TYPES = list(Config.INVESTOR_TYPE_WEIGHTS.keys())
-LEVELS = [1, 2, 3]
-total_etfs = len(info_df)
-
-print(f"\n처리 범위:")
-print(f"- 투자자 유형: {len(INVESTOR_TYPES)}개 {INVESTOR_TYPES[:3]}...")
-print(f"- 레벨: {len(LEVELS)}개 {LEVELS}")
-print(f"- ETF 개수: {total_etfs}개")
-print(f"- 총 조합: {len(INVESTOR_TYPES) * len(LEVELS) * total_etfs:,}개")
-
-engine = ETFRecommendationEngine()
-
-# ETF별 기본 데이터 미리 분석
-print("\n1단계: ETF 기본 분석 캐시 생성")
-etf_base_cache = {}
-failed_etfs = []
-
-for idx, row in info_df.iterrows():
-    etf_name = row['종목명']
-    if (idx + 1) % 50 == 0:
-        print(f"  진행률: {idx + 1}/{total_etfs} ({(idx + 1) / total_etfs * 100:.1f}%)")
+class ETFCacheBuilder:
+    """ETF 캐시 빌더 클래스"""
     
-    try:
-        # 모든 ETF 데이터(기본정보, 시세분석, 수익률/보수 등)는 레벨/유형과 무관하게 동일
-        dummy_profile = {'level': 1, 'investor_type': 'ARSB'}
-        etf_data = analyze_etf(etf_name, dummy_profile, price_df, info_df, perf_df, aum_df, ref_idx_df, risk_df)
+    def __init__(self):
+        """초기화"""
+        self.config = Config()
+        self.recommendation_engine = ETFRecommendationEngine()
+        self.data = {}
         
-        if '설명' in etf_data and '찾을 수 없습니다' in etf_data['설명']:
-            failed_etfs.append(etf_name)
-            continue
+    def load_data(self):
+        """모든 필요한 데이터 로드"""
+        logger.info("데이터 로딩 시작")
+        
+        try:
+            # 기본 ETF 데이터
+            data_types = {
+                'info': 'etf_info',
+                'prices': 'etf_prices', 
+                'performance': 'etf_performance',
+                'aum': 'etf_aum',
+                'reference': 'etf_reference',
+                'risk': 'etf_risk'
+            }
             
-        etf_base_cache[etf_name] = etf_data
+            for key, data_type in data_types.items():
+                file_path = self.config.get_data_path(data_type)
+                if os.path.exists(file_path):
+                    if key == 'prices':
+                        # 시세 데이터는 타입 지정
+                        self.data[key] = pd.read_csv(
+                            file_path, encoding='utf-8-sig',
+                            dtype={'srtnCd': str, 'basDt': str, 'clpr': float},
+                            low_memory=False
+                        )
+                    else:
+                        self.data[key] = pd.read_csv(file_path, encoding='utf-8-sig')
+                    
+                    logger.info(f"{key} 데이터 로딩 완료: {len(self.data[key])}행")
+                else:
+                    logger.error(f"{key} 파일을 찾을 수 없습니다: {file_path}")
+                    raise FileNotFoundError(f"Required file not found: {file_path}")
+            
+            # Risk tier 데이터 로드
+            risk_tier_path = self.config.get_data_path('risk_tier')
+            if os.path.exists(risk_tier_path):
+                self.data['risk_tier'] = pd.read_csv(risk_tier_path, encoding='utf-8-sig')
+                self.data['risk_tier']['basDt'] = pd.to_datetime(self.data['risk_tier']['basDt'])
+                logger.info(f"Risk tier 데이터 로딩 완료: {len(self.data['risk_tier'])}행")
+            else:
+                logger.error(f"Risk tier 파일을 찾을 수 없습니다: {risk_tier_path}")
+                raise FileNotFoundError(f"Risk tier file not found: {risk_tier_path}")
+            
+        except Exception as e:
+            logger.error(f"데이터 로딩 중 오류: {e}")
+            raise
+
+    def get_latest_risk_tier(self, etf_code: str) -> int:
+        """
+        ETF의 최신 risk_tier 조회
         
-    except Exception as e:
-        print(f"  {etf_name} 분석 실패: {str(e)[:50]}...")
-        failed_etfs.append(etf_name)
-
-print(f"기본 분석 완료: {len(etf_base_cache)}개 성공, {len(failed_etfs)}개 실패")
-
-# 2단계: 전체 조합별 점수 계산
-print("\n2단계: 투자자별 점수 계산")
-results = []
-total_combinations = len(INVESTOR_TYPES) * len(LEVELS) * len(etf_base_cache)
-current_count = 0
-batch_size = 100
-batch_results = []
-
-def process_combination(args):
-    """단일 조합 처리 함수"""
-    investor_type, level, etf_name, etf_data, row = args
-    try:
-        base_score = engine.calculate_base_score(etf_data)
-        type_weight = engine.calculate_type_weight_cache(row, investor_type)
-        final_score = base_score * type_weight
+        Args:
+            etf_code: ETF 종목코드
         
+        Returns:
+            risk_tier (-1: 측정불가, 0~4: 위험등급)
+        """
+        try:
+            # 해당 ETF의 risk_tier 데이터 조회
+            etf_risk_data = self.data['risk_tier'][
+                self.data['risk_tier']['srtnCd'].astype(str).str.strip() == str(etf_code).strip()
+            ]
+            
+            if etf_risk_data.empty:
+                return -1  # 측정불가
+            
+            # 최신 날짜의 risk_tier 반환
+            latest_data = etf_risk_data.loc[etf_risk_data['basDt'].idxmax()]
+            risk_tier = latest_data.get('risk_tier', -1)
+            
+            # 유효한 risk_tier 값 확인
+            if pd.isna(risk_tier) or not isinstance(risk_tier, (int, float)) or risk_tier < 0:
+                return -1
+            
+            return int(risk_tier)
+            
+        except Exception as e:
+            logger.warning(f"ETF {etf_code}의 risk_tier 조회 오류: {e}")
+            return -1
+
+    def process_single_etf(self, etf_row: pd.Series) -> List[Dict[str, Any]]:
+        """
+        단일 ETF에 대한 모든 조합 처리
+        
+        Args:
+            etf_row: ETF 기본 정보
+        
+        Returns:
+            처리된 레코드 리스트
+        """
+        etf_name = etf_row['종목명']
+        etf_code = etf_row.get('단축코드', etf_row.get('종목코드', ''))
+        
+        try:
+            # ETF 분석 수행 (기본 프로필 사용)
+            base_profile = {"level": 2, "investor_type": "ARSB"}
+            etf_info = analyze_etf(
+                etf_name, base_profile,
+                self.data['prices'], self.data['info'],
+                self.data['performance'], self.data['aum'],
+                self.data['reference'], self.data['risk']
+            )
+            
+            # 분석 실패시 빈 리스트 반환
+            if etf_info is None or (isinstance(etf_info, dict) and etf_info.get('설명')):
+                return []
+            
+            # 기본 점수 계산
+            base_score = self._calculate_base_score(etf_info)
+            
+            # Risk tier 조회
+            risk_tier = self.get_latest_risk_tier(etf_code)
+            
+            records = []
+            
+            # 모든 레벨과 투자자 유형 조합 생성
+            for level in [1, 2, 3]:
+                # 레벨별 risk_tier 제한 확인
+                risk_limit = self.config.get_risk_tier_limit(level)
+                
+                # risk_tier 필터링 적용
+                if risk_tier == -1:  # 측정불가
+                    # Level 1은 측정불가 제외, Level 2,3은 포함 (보수적 점수)
+                    if level == 1:
+                        continue
+                    effective_score = base_score * 0.5  # 보수적 점수
+                elif risk_tier > risk_limit:
+                    # 해당 레벨 제한 초과시 제외
+                    continue
+                else:
+                    effective_score = base_score
+                
+                # 모든 투자자 유형에 대해 처리
+                for investor_type in self.config.INVESTOR_TYPE_WEIGHTS.keys():
+                    # 투자자 유형별 가중치 계산
+                    type_weight = self.recommendation_engine.calculate_type_weight_cache(
+                        etf_row, investor_type
+                    )
+                    
+                    # 최종 점수 계산
+                    final_score = effective_score * type_weight
+                    
+                    # 레코드 생성
+                    record = self._create_record(
+                        etf_row, etf_info, level, investor_type,
+                        base_score, type_weight, final_score, risk_tier
+                    )
+                    records.append(record)
+            
+            return records
+            
+        except Exception as e:
+            logger.error(f"ETF {etf_name} 처리 중 오류: {e}")
+            return []
+
+    def _calculate_base_score(self, etf_info: Dict[str, Any]) -> float:
+        """
+        ETF 기본 점수 계산
+        
+        Args:
+            etf_info: ETF 분석 정보
+        
+        Returns:
+            기본 점수 (0.0~1.0)
+        """
+        try:
+            # 각 요소별 점수 계산
+            return_score = self._normalize_return_score(etf_info.get('시세분석', {}))
+            fee_score = self._normalize_fee_score(etf_info.get('수익률/보수', {}))
+            volume_score = self._normalize_volume_score(etf_info.get('자산규모/유동성', {}))
+            volatility_score = self._normalize_volatility_score(etf_info.get('위험', {}))
+            
+            # 가중합 계산
+            base_score = (
+                return_score * 0.4 +      # 수익률 40%
+                fee_score * 0.2 +         # 총보수 20% 
+                volume_score * 0.2 +      # 거래량 20%
+                volatility_score * 0.2    # 변동성 20%
+            )
+            
+            return max(0.0, min(1.0, base_score))
+            
+        except Exception as e:
+            logger.warning(f"기본 점수 계산 오류: {e}")
+            return 0.5  # 기본값
+
+    def _normalize_return_score(self, market_data: Dict) -> float:
+        """수익률 정규화 (1년 > 3개월 > 1개월 순)"""
+        returns = [
+            market_data.get('1년 수익률'),
+            market_data.get('3개월 수익률'), 
+            market_data.get('1개월 수익률')
+        ]
+        
+        for ret in returns:
+            if ret is not None and not pd.isna(ret):
+                # -100% ~ +100% → 0~1
+                return max(0, min(1, (ret + 100) / 200))
+        
+        return 0.5  # 기본값
+
+    def _normalize_fee_score(self, perf_data: Dict) -> float:
+        """총보수 정규화 (낮을수록 좋음)"""
+        fee = perf_data.get('총 보수')
+        if fee is None or pd.isna(fee):
+            return 0.5
+        
+        try:
+            fee_val = float(fee)
+            # 0~10% → 1~0 (낮을수록 높은 점수)
+            return max(0, min(1, 1 - (fee_val / 10)))
+        except (ValueError, TypeError):
+            return 0.5
+
+    def _normalize_volume_score(self, aum_data: Dict) -> float:
+        """거래량 정규화"""
+        volume = aum_data.get('평균 거래량')
+        if volume is None or pd.isna(volume):
+            return 0.5
+        
+        try:
+            volume_val = float(volume)
+            # 0~100만주 → 0~1
+            return max(0, min(1, volume_val / 1000000))
+        except (ValueError, TypeError):
+            return 0.5
+
+    def _normalize_volatility_score(self, risk_data: Dict) -> float:
+        """변동성 정규화"""
+        volatility = risk_data.get('변동성', '보통')
+        grade_scores = {
+            '매우낮음': 0.2, '낮음': 0.4, '보통': 0.6, 
+            '높음': 0.8, '매우높음': 1.0
+        }
+        return grade_scores.get(volatility, 0.6)
+
+    def _create_record(
+        self, 
+        etf_row: pd.Series, 
+        etf_info: Dict[str, Any],
+        level: int, 
+        investor_type: str,
+        base_score: float, 
+        type_weight: float, 
+        final_score: float,
+        risk_tier: int
+    ) -> Dict[str, Any]:
+        """레코드 생성"""
         return {
-            'ETF명': etf_name,
+            # ETF 기본 정보
+            'ETF명': etf_row['종목명'],
+            '종목코드': etf_row.get('단축코드', etf_row.get('종목코드', '')),
+            '분류체계': etf_row.get('분류체계', ''),
+            '기초지수': etf_row.get('기초지수', ''),
+            
+            # 사용자 프로필
             'level': level,
             'investor_type': investor_type,
-            'base_score': base_score,
-            'type_weight': type_weight,
-            'final_score': final_score,
-            '분류체계': row['분류체계'],
-            '기초지수': row['기초지수'],
-        }
-    except Exception as e:
-        return None
-
-# 배치별 처리
-for investor_type in INVESTOR_TYPES:
-    for level in LEVELS:
-        batch_args = []
-        
-        for idx, row in info_df.iterrows():
-            etf_name = row['종목명']
-            if etf_name not in etf_base_cache:
-                continue
-                
-            etf_data = etf_base_cache[etf_name]
-            batch_args.append((investor_type, level, etf_name, etf_data, row))
-        
-        # 병렬 처리로 성능 향상
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(process_combination, args) for args in batch_args]
             
-            for future in as_completed(futures):
-                current_count += 1
-                result = future.result()
-                if result:
-                    batch_results.append(result)
-                
-                # 진행률 출력 (100개마다)
-                if current_count % batch_size == 0:
-                    elapsed = time.time() - start_time
-                    progress = current_count / total_combinations * 100
-                    eta = (elapsed / current_count) * (total_combinations - current_count)
-                    print(f"  진행률: {current_count:,}/{total_combinations:,} ({progress:.1f}%) | "
-                          f"경과: {elapsed:.1f}s | 예상 완료: {eta:.1f}s")
+            # 점수 정보
+            'base_score': round(base_score, 4),
+            'type_weight': round(type_weight, 4),
+            'final_score': round(final_score, 4),
+            'risk_tier': risk_tier,
+            
+            # 추가 메타데이터
+            '자산규모': etf_info.get('자산규모/유동성', {}).get('자산규모'),
+            '거래량': etf_info.get('자산규모/유동성', {}).get('평균 거래량'),
+            '변동성': etf_info.get('위험', {}).get('변동성'),
+            '총보수': etf_info.get('수익률/보수', {}).get('총 보수'),
+        }
 
-# 결과 정리
-results = batch_results
-print(f"\n✓ 점수 계산 완료: {len(results):,}개 결과 생성")
+    def build_cache(self, max_workers: int = 4) -> pd.DataFrame:
+        """
+        ETF 캐시 빌드 (멀티스레딩 사용)
+        
+        Args:
+            max_workers: 최대 워커 수
+        
+        Returns:
+            완성된 캐시 DataFrame
+        """
+        logger.info("ETF 캐시 빌드 시작")
+        start_time = time.time()
+        
+        # ETF 목록 준비
+        etf_list = self.data['info'].copy()
+        total_etfs = len(etf_list)
+        
+        all_records = []
+        completed = 0
+        
+        # 멀티스레딩으로 처리
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 모든 ETF에 대해 작업 제출
+            future_to_etf = {
+                executor.submit(self.process_single_etf, row): idx 
+                for idx, (_, row) in enumerate(etf_list.iterrows())
+            }
+            
+            # 결과 수집
+            for future in as_completed(future_to_etf):
+                try:
+                    records = future.result()
+                    all_records.extend(records)
+                    completed += 1
+                    
+                    # 진행률 출력
+                    if completed % 50 == 0:
+                        progress = (completed / total_etfs) * 100
+                        elapsed = time.time() - start_time
+                        logger.info(f"진행률: {progress:.1f}% ({completed}/{total_etfs}) - {elapsed:.1f}초 경과")
+                        
+                except Exception as e:
+                    logger.error(f"ETF 처리 중 오류: {e}")
+                    completed += 1
+        
+        # DataFrame 생성
+        cache_df = pd.DataFrame(all_records)
+        
+        # 통계 출력
+        elapsed_time = time.time() - start_time
+        logger.info(f"캐시 빌드 완료: {len(cache_df)}개 레코드, {elapsed_time:.1f}초 소요")
+        logger.info(f"레벨별 분포: {cache_df['level'].value_counts().to_dict()}")
+        logger.info(f"Risk tier별 분포: {cache_df['risk_tier'].value_counts().to_dict()}")
+        
+        return cache_df
 
-# 3단계: 결과 저장
-print("\n3단계: 결과 저장")
-if results:
-    cache_df = pd.DataFrame(results)
-    
-    # 메모리 최적화: 데이터 타입 최적화
-    cache_df['level'] = cache_df['level'].astype('int8')
-    cache_df['base_score'] = cache_df['base_score'].astype('float32')
-    cache_df['type_weight'] = cache_df['type_weight'].astype('float32')
-    cache_df['final_score'] = cache_df['final_score'].astype('float32')
-    
-    # 상위 점수별 정렬
-    cache_df = cache_df.sort_values(['investor_type', 'level', 'final_score'], ascending=[True, True, False])
-    
-    cache_df.to_csv('data/etf_scores_cache.csv', index=False, encoding='utf-8-sig')
-    print(f"✓ 캐시 파일 저장 완료: data/etf_scores_cache.csv")
-    
-    # 통계 정보
-    print(f"\n생성 통계:")
-    print(f"- 총 결과: {len(cache_df):,}개")
-    print(f"- 투자자 유형별: {cache_df.groupby('investor_type').size().to_dict()}")
-    print(f"- 레벨별: {cache_df.groupby('level').size().to_dict()}")
-    print(f"- 평균 점수: {cache_df['final_score'].mean():.3f}")
-    print(f"- 최고 점수: {cache_df['final_score'].max():.3f}")
-    
-else:
-    print("생성된 결과가 없습니다.")
+    def save_cache(self, cache_df: pd.DataFrame):
+        """캐시를 파일로 저장"""
+        cache_path = self.config.get_data_path('cache')
+        
+        try:
+            cache_df.to_csv(cache_path, index=False, encoding='utf-8-sig')
+            logger.info(f"캐시 저장 완료: {cache_path} ({len(cache_df)}개 레코드)")
+            
+            # 파일 크기 출력
+            file_size = os.path.getsize(cache_path) / (1024 * 1024)  # MB
+            logger.info(f"파일 크기: {file_size:.1f} MB")
+            
+        except Exception as e:
+            logger.error(f"캐시 저장 중 오류: {e}")
+            raise
 
-total_time = time.time() - start_time
-print(f"\n전체 완료! 총 소요시간: {total_time:.1f}초")
-print("=" * 60) 
+
+def main():
+    """메인 함수"""
+    print("=" * 60)
+    print("ETF 점수 캐시 생성 시작")
+    print("=" * 60)
+    
+    try:
+        # 캐시 빌더 초기화
+        builder = ETFCacheBuilder()
+        
+        # 데이터 로딩
+        builder.load_data()
+        
+        # 캐시 빌드
+        cache_df = builder.build_cache(max_workers=4)
+        
+        # 캐시 저장
+        builder.save_cache(cache_df)
+        
+        print("=" * 60)
+        print("ETF 점수 캐시 생성 완료!")
+        print("=" * 60)
+        
+    except Exception as e:
+        logger.error(f"캐시 생성 중 오류 발생: {e}")
+        print(f"❌ 오류: {e}")
+        return 1
+    
+    return 0
+
+
+if __name__ == "__main__":
+    exit(main()) 
