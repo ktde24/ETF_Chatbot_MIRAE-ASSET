@@ -271,12 +271,10 @@ class ETFChatbotApp:
             if len(etf_names) < 2:
                 return "비교할 ETF를 2개 이상 명확히 입력해주세요. (예: 'KODEX 200 vs TIGER 200 비교해줘')"
             
-            # ETF 비교 실행
+            # ETF 비교 실행 (멀티레이어 최적화)
             comparison_result = self.comparison_engine.compare_etfs(
                 etf_names, user_profile, 
-                self.data['etf_prices'], self.data['etf_info'], 
-                self.data['etf_performance'], self.data['etf_aum'], 
-                self.data['etf_reference'], self.data['etf_risk']
+                self.data['etf_prices'], self.data['etf_info']
             )
             
             # 비교 결과가 없거나 에러가 있으면 안내 문구만 출력

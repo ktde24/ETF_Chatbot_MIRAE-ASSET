@@ -77,19 +77,16 @@ class ETFComparison:
         etf_names: List[str], 
         user_profile: Dict[str, Any], 
         price_df: pd.DataFrame, 
-        info_df: pd.DataFrame, 
-        perf_df: pd.DataFrame, 
-        aum_df: pd.DataFrame, 
-        ref_idx_df: pd.DataFrame, 
-        risk_df: pd.DataFrame
+        info_df: pd.DataFrame
     ) -> Dict[str, Any]:
         """
-        여러 ETF를 사용자 프로필에 맞게 비교 분석
+        여러 ETF를 사용자 프로필에 맞게 비교 분석 (멀티레이어 최적화)
         
         Args:
             etf_names: 비교할 ETF명 리스트
             user_profile: 사용자 프로필 (level, investor_type)
-            *_df: 각종 데이터 DataFrame들
+            price_df: 시세 데이터 DataFrame
+            info_df: ETF 기본 정보 DataFrame
         
         Returns:
             비교 분석 결과 딕셔너리
@@ -100,9 +97,9 @@ class ETFComparison:
             if validation_error:
                 return {'error': validation_error}
             
-            # 2단계: 하이브리드 분석 (캐시 + 실시간)
+            # 2단계: 멀티레이어 분석 (캐시 + 실시간)
             scored_etfs, valid_etfs = self._analyze_etfs_hybrid(
-                etf_names, user_profile, price_df, info_df, perf_df, aum_df, ref_idx_df, risk_df
+                etf_names, user_profile, price_df, info_df
             )
             
             if len(valid_etfs) < MIN_COMPARISON_ETFS:
@@ -135,13 +132,9 @@ class ETFComparison:
         etf_names: List[str], 
         user_profile: Dict[str, Any],
         price_df: pd.DataFrame, 
-        info_df: pd.DataFrame, 
-        perf_df: pd.DataFrame, 
-        aum_df: pd.DataFrame, 
-        ref_idx_df: pd.DataFrame, 
-        risk_df: pd.DataFrame
+        info_df: pd.DataFrame
     ) -> Tuple[List[Dict], List[str]]:
-        """ETF 분석 (캐시 + 실시간)"""
+        """멀티레이어 ETF 분석 (캐시 + 실시간)"""
         import time
         start_time = time.time()
         
@@ -162,29 +155,37 @@ class ETFComparison:
                     logger.warning(f"ETF명을 찾을 수 없음: {etf_name}")
                     continue
                 
-                # 1. 캐시에서 기본 점수 조회
+                # 1. 캐시에서 기본 점수 및 공식 데이터 조회
                 cache_data = self._get_cache_data(clean_name, level, investor_type)
                 
                 # 2. 실시간 시세 데이터 조회
                 realtime_data = self._get_realtime_data(clean_name, price_df, info_df)
                 
-                # 3. 공식 데이터 조회
-                official_data = self._get_official_data(clean_name, info_df, perf_df, aum_df, ref_idx_df, risk_df)
-                
-                # 4. 데이터 통합
-                if realtime_data and official_data:
+                # 3. 데이터 통합
+                if cache_data and realtime_data:
+                    # 캐시에서 공식 데이터 추출
+                    official_data = {
+                        '수익률/보수': {'총 보수': cache_data.get('총보수')},
+                        '자산규모/유동성': {
+                            '자산규모': cache_data.get('자산규모'),
+                            '평균 거래량': cache_data.get('거래량')
+                        },
+                        '위험': {'변동성': cache_data.get('변동성')},
+                        '기본정보': {
+                            '종목코드': cache_data.get('종목코드'),
+                            '분류체계': cache_data.get('분류체계'),
+                            '기초지수': cache_data.get('기초지수')
+                        }
+                    }
+                    
                     etf_data = {
                         'ETF명': clean_name,
                         '시세분석': realtime_data,
-                        '수익률/보수': official_data.get('performance', {}),
-                        '자산규모/유동성': official_data.get('aum', {}),
-                        '위험': official_data.get('risk', {}),
-                        '기본정보': official_data.get('info', {})
+                        '수익률/보수': official_data['수익률/보수'],
+                        '자산규모/유동성': official_data['자산규모/유동성'],
+                        '위험': official_data['위험'],
+                        '기본정보': official_data['기본정보']
                     }
-                    
-                    # 캐시 데이터가 없으면 실시간 계산
-                    if cache_data is None:
-                        cache_data = self._calculate_fallback_scores(etf_data, user_profile)
                     
                     scored_etfs.append({
                         'etf_data': etf_data,
@@ -212,7 +213,7 @@ class ETFComparison:
         return scored_etfs, valid_etfs
 
     def _get_cache_data(self, etf_name: str, level: int, investor_type: str) -> Optional[Dict]:
-        """캐시에서 ETF 점수 데이터 조회"""
+        """캐시에서 ETF 점수 및 공식 데이터 조회"""
         if self.cache_df is None:
             logger.warning("캐시 데이터가 없어 실시간 계산으로 대체합니다.")
             return None
@@ -228,10 +229,20 @@ class ETFComparison:
             if not etf_cache.empty:
                 cache_row = etf_cache.iloc[0]
                 return {
+                    # 점수 정보
                     'base_score': cache_row['base_score'],
                     'type_weight': cache_row['type_weight'],
                     'final_score': cache_row['final_score'],
-                    'risk_tier': cache_row['risk_tier']
+                    'risk_tier': cache_row['risk_tier'],
+                    
+                    # 공식 데이터 (캐시에 저장된)
+                    '종목코드': cache_row['종목코드'],
+                    '분류체계': cache_row['분류체계'],
+                    '기초지수': cache_row['기초지수'],
+                    '자산규모': cache_row['자산규모'],
+                    '거래량': cache_row['거래량'],
+                    '변동성': cache_row['변동성'],
+                    '총보수': cache_row['총보수']
                 }
             else:
                 logger.warning(f"캐시에서 ETF 데이터를 찾을 수 없음: {etf_name}")
@@ -343,36 +354,7 @@ class ETFComparison:
             logger.error(f"시세 데이터 분석 오류: {e}")
             return None
 
-    def _get_official_data(self, etf_name: str, info_df: pd.DataFrame, perf_df: pd.DataFrame, 
-                          aum_df: pd.DataFrame, ref_idx_df: pd.DataFrame, risk_df: pd.DataFrame) -> Dict:
-        """공식 데이터 조회"""
-        try:
-            # 기본 정보
-            info_data = info_df[info_df['종목명'] == etf_name]
-            info = info_data.iloc[0].to_dict() if not info_data.empty else {}
-            
-            # 수익률/보수
-            perf_data = perf_df[perf_df['종목명'] == etf_name]
-            performance = perf_data.iloc[0].to_dict() if not perf_data.empty else {}
-            
-            # 자산규모/유동성
-            aum_data = aum_df[aum_df['종목명'] == etf_name]
-            aum = aum_data.iloc[0].to_dict() if not aum_data.empty else {}
-            
-            # 위험 데이터
-            risk_data = risk_df[risk_df['종목명'] == etf_name]
-            risk = risk_data.iloc[0].to_dict() if not risk_data.empty else {}
-            
-            return {
-                'info': info,
-                'performance': performance,
-                'aum': aum,
-                'risk': risk
-            }
-            
-        except Exception as e:
-            logger.error(f"공식 데이터 조회 중 오류 - {etf_name}: {e}")
-            return {}
+    # _get_official_data 메서드는 캐시에서 공식 데이터를 조회하므로 제거됨
 
     def _normalize_user_level(self, user_level: Any) -> int:
         """사용자 레벨 정규화"""
