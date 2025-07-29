@@ -9,9 +9,15 @@ ETF 분석 모듈
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import re
 import logging
 from typing import Dict, Any, Optional, Tuple
+
+# 공통 유틸리티 임포트
+from .utils import (
+    normalize_etf_name, safe_float, safe_format, 
+    extract_etf_name_from_input, find_etf_row,
+    create_error_result, clean_dataframe
+)
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -20,64 +26,14 @@ logger = logging.getLogger(__name__)
 # 사용자 레벨별 프롬프트 설정
 # =============================================================================
 LEVEL_PROMPTS = {
-    1: "- Level 1: 유치원/초1 스타일로 아주 쉽게, 비유와 예시 위주로 3줄 이하로 요약하세요.",
-    2: "- Level 2: 중고등학생도 이해 가능한 쉬운 말로, 핵심 개념과 이유를 포함해 3줄 이하로 요약하세요.",
-    3: "- Level 3: 고급 분석과 실전 활용 관점으로, 데이터 기반·비교·수치 등을 포함해 3줄 이하로 요약하세요."
+    1: "- Level 1: 유치원/초1 스타일로 아주 쉽게, 비유와 예시 위주로 2줄 이하로 요약하세요.",
+    2: "- Level 2: 중고등학생도 이해 가능한 쉬운 말로, 핵심 개념과 이유를 포함해 2줄 이하로 요약하세요.",
+    3: "- Level 3: 고급 분석과 실전 활용 관점으로, 데이터 기반·비교·수치 등을 포함해 2줄 이하로 요약하세요."
 }
 
-
 # =============================================================================
-# 유틸리티 함수들
+# ETF명 추출 함수
 # =============================================================================
-
-def normalize_etf_name(name: str) -> str:
-    """
-    ETF 종목명 정규화 (공백 제거, 소문자 변환)
-    
-    Args:
-        name: 원본 ETF명
-    
-    Returns:
-        정규화된 ETF명
-    """
-    if not name:
-        return ""
-    return re.sub(r'\s+', '', str(name)).lower()
-
-def safe_float(value: Any) -> Optional[float]:
-    """
-    안전한 float 변환 (None, NaN, 빈 문자열 처리)
-    
-    Args:
-        value: 변환할 값
-    
-    Returns:
-        변환된 float 값 또는 None
-    """
-    try:
-        if value is None or str(value).strip() == '' or str(value).lower() == 'nan':
-            return None
-        return float(str(value).replace(',', '').strip())
-    except (ValueError, TypeError):
-        return None
-
-def safe_format(value: Any, suffix: str = "") -> str:
-    """
-    안전한 값 포맷팅 (None 처리)
-    
-    Args:
-        value: 포맷팅할 값
-        suffix: 접미사 (%, 원 등)
-    
-    Returns:
-        포맷팅된 문자열
-    """
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return "N/A"
-    try:
-        return f"{float(value):.2f}{suffix}"
-    except (ValueError, TypeError):
-        return str(value)
 
 def extract_etf_name(user_input: str, info_df: pd.DataFrame) -> str:
     """
@@ -90,38 +46,7 @@ def extract_etf_name(user_input: str, info_df: pd.DataFrame) -> str:
     Returns:
         매칭된 ETF명 또는 원본 입력
     """
-    if info_df.empty:
-        return user_input.strip()
-    
-    candidates = list(info_df['종목명'].dropna())
-    norm_input = normalize_etf_name(user_input)
-    
-    # 1단계: 정확한 매칭
-    for name in candidates:
-        if normalize_etf_name(name) == norm_input:
-            return name
-    
-    # 2단계: 포함 매칭
-    for name in candidates:
-        if norm_input in normalize_etf_name(name):
-            return name
-    
-    # 3단계: 분석 키워드 제거
-    cleaned_input = re.sub(
-        r'(분석|설명|추천|해줘|알려줘|비교|차트|정보|ETF)', 
-        '', user_input, flags=re.I
-    ).strip()
-    
-    norm_cleaned = normalize_etf_name(cleaned_input)
-    for name in candidates:
-        if normalize_etf_name(name) == norm_cleaned:
-            return name
-    
-    for name in candidates:
-        if norm_cleaned in normalize_etf_name(name):
-            return name
-    
-    return user_input.strip()  # fallback
+    return extract_etf_name_from_input(user_input, info_df)
 
 def find_etf_row(df: pd.DataFrame, etf_name: str) -> Optional[pd.Series]:
     """
@@ -134,27 +59,8 @@ def find_etf_row(df: pd.DataFrame, etf_name: str) -> Optional[pd.Series]:
     Returns:
         매칭된 행(Series) 또는 None
     """
-    if df is None or df.empty:
-        return None
-    
-    norm_input = normalize_etf_name(etf_name)
-    
-    # 1단계: 종목명으로 정확한 매칭
-    for idx, row in df.iterrows():
-        if normalize_etf_name(row.get('종목명', '')) == norm_input:
-            return row
-    
-    # 2단계: 종목코드로 매칭
-    for idx, row in df.iterrows():
-        if normalize_etf_name(str(row.get('종목코드', ''))) == norm_input:
-            return row
-    
-    # 3단계: 부분 매칭
-    for idx, row in df.iterrows():
-        if norm_input in normalize_etf_name(row.get('종목명', '')):
-            return row
-    
-    return None
+    from .utils import find_etf_row as utils_find_etf_row
+    return utils_find_etf_row(df, etf_name)
 
 def get_exact_etf_info(user_input: str, info_df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -348,8 +254,18 @@ def _collect_official_data(
     }
 
 def _create_error_result(etf_name: str, error_message: str) -> Dict[str, Any]:
-    """에러 결과 생성"""
-    return {
+    """
+    에러 결과 생성
+    
+    Args:
+        etf_name: ETF명
+        error_message: 에러 메시지
+    
+    Returns:
+        에러 결과 딕셔너리
+    """
+    error_result = create_error_result(error_message, f"ETF: {etf_name}")
+    error_result.update({
         'ETF명': etf_name,
         '기본정보': {},
         '수익률/보수': {},
@@ -358,7 +274,8 @@ def _create_error_result(etf_name: str, error_message: str) -> Dict[str, Any]:
         '위험': {},
         '시세분석': {},
         '설명': error_message
-    }
+    })
+    return error_result
 
 def _is_market_analysis_insufficient(market_analysis: Dict[str, Any]) -> bool:
     """시세 분석이 불충분한지 확인"""

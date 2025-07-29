@@ -3,15 +3,20 @@ ETF 추천 엔진
 - 사용자 레벨과 투자 유형에 맞는 ETF 추천
 - 캐시 기반 고속 추천 시스템
 - 투자자 유형별 가중치 적용
+- 투자자 유형별 맞춤 점수 계산
 """
 
 import pandas as pd
 import numpy as np
-import re
-from typing import Dict, List, Any, Optional
-from .config import Config
-from .etf_analysis import safe_float
 import logging
+from typing import Dict, List, Any, Optional
+
+# 공통 유틸리티 임포트
+from .config import Config
+from .utils import (
+    safe_float, filter_dataframe_by_keyword, 
+    validate_user_profile, create_error_result
+)
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -88,13 +93,11 @@ class ETFRecommendationEngine:
         """
         if not category_keyword.strip():
             return cache_df
-        # ETF명, 분류체계, 기초지수에서 키워드 검색 (모두 OR)
-        mask = (
-            cache_df['ETF명'].str.contains(category_keyword, case=False, na=False) |
-            cache_df['분류체계'].str.contains(category_keyword, case=False, na=False) |
-            cache_df['기초지수'].str.contains(category_keyword, case=False, na=False)
-        )
-        filtered = cache_df[mask]
+        
+        # ETF명, 분류체계, 기초지수에서 키워드 검색
+        search_columns = ['ETF명', '분류체계', '기초지수']
+        filtered = filter_dataframe_by_keyword(cache_df, category_keyword, search_columns)
+        
         logger.info(f"카테고리 '{category_keyword}' 필터링: {len(cache_df)} → {len(filtered)}")
         return filtered
 
@@ -112,7 +115,7 @@ class ETFRecommendationEngine:
         user_level = self._normalize_user_level(user_profile.get('level'))
         investor_type = user_profile.get('investor_type', 'ARSB')
 
-        # 타입 강제 변환 (안전)
+        # 타입 강제 변환
         cache_df = cache_df.copy()
         cache_df['level'] = cache_df['level'].astype(int)
         cache_df['investor_type'] = cache_df['investor_type'].astype(str)
@@ -126,7 +129,7 @@ class ETFRecommendationEngine:
 
     def _normalize_user_level(self, user_level: Any) -> int:
         """
-        사용자 레벨 정규화
+        사용자 레벨 정규화 (기존 함수와의 호환성을 위해 유지)
         
         Args:
             user_level: 사용자 레벨 (int, str, 또는 기타)
@@ -134,18 +137,8 @@ class ETFRecommendationEngine:
         Returns:
             정규화된 레벨 (1, 2, 3)
         """
-        if isinstance(user_level, int):
-            return max(1, min(3, user_level))
-        
-        if isinstance(user_level, str) and user_level.startswith('level'):
-            try:
-                level = int(user_level[-1])
-                return max(1, min(3, level))
-            except (ValueError, IndexError):
-                pass
-        
-        # 기본값
-        return 2
+        validated_profile = validate_user_profile({'level': user_level})
+        return validated_profile['level']
 
     def _select_top_etfs(self, filtered_df: pd.DataFrame, top_n: int) -> pd.DataFrame:
         """
@@ -166,7 +159,7 @@ class ETFRecommendationEngine:
         top_etfs = filtered_df.sort_values(
             'final_score', 
             ascending=False, 
-            na_position='last'  # na_last 대신 na_position 사용
+            na_position='last'  
         ).head(top_n)
         
         logger.info(f"상위 {top_n}개 ETF 선택 완료")

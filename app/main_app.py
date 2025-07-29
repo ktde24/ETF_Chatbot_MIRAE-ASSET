@@ -3,25 +3,30 @@ ETF RAG 챗봇 메인 애플리케이션
 - Streamlit 기반 웹 인터페이스
 - ETF 분석, 추천, 비교 기능 제공
 - 사용자 레벨 및 투자 성향별 맞춤 서비스
+- 대화형 인터페이스 및 시각화 제공
 """
 
 import streamlit as st
 import pandas as pd
 import sys
 import os
-import re
 import logging
+import re
 from typing import Dict, List, Optional
 
 # 프로젝트 루트 경로 추가
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 챗봇 모듈 임포트
-from chatbot.etf_analysis import analyze_etf, LEVEL_PROMPTS, extract_etf_name, plot_etf_bar, plot_etf_summary_bar
+from chatbot.etf_analysis import analyze_etf, LEVEL_PROMPTS, plot_etf_bar, plot_etf_summary_bar
 from chatbot.clova_client import ClovaClient
 from chatbot.recommendation_engine import ETFRecommendationEngine
 from chatbot.etf_comparison import ETFComparison
 from chatbot.config import Config
+from chatbot.utils import (
+    extract_etf_name_from_input, validate_user_profile,
+    safe_read_csv_with_fallback
+)
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -59,7 +64,8 @@ class ETFChatbotApp:
             for data_type in data_types:
                 file_path = _self.config.get_data_path(data_type)
                 if file_path and os.path.exists(file_path):
-                    data[data_type] = pd.read_csv(file_path)
+                    # 안전한 CSV 읽기 사용
+                    data[data_type] = safe_read_csv_with_fallback(file_path)
                     logger.info(f"{data_type} 데이터 로딩 완료: {len(data[data_type])}행")
                 else:
                     logger.warning(f"{data_type} 파일을 찾을 수 없습니다: {file_path}")
@@ -236,7 +242,7 @@ class ETFChatbotApp:
             # 캐시 데이터 로드
             cache_path = self.config.get_data_path('cache')
             if not os.path.exists(cache_path):
-                return "❌ 추천 캐시 데이터를 찾을 수 없습니다. 먼저 캐시를 생성해주세요."
+                return "추천 캐시 데이터를 찾을 수 없습니다. 먼저 캐시를 생성해주세요."
             
             cache_df = pd.read_csv(cache_path, encoding='utf-8-sig')
             
@@ -271,7 +277,7 @@ class ETFChatbotApp:
             if len(etf_names) < 2:
                 return "비교할 ETF를 2개 이상 명확히 입력해주세요. (예: 'KODEX 200 vs TIGER 200 비교해줘')"
             
-            # ETF 비교 실행 (멀티레이어 최적화)
+            # ETF 비교 실행
             comparison_result = self.comparison_engine.compare_etfs(
                 etf_names, user_profile, 
                 self.data['etf_prices'], self.data['etf_info']
@@ -315,7 +321,7 @@ class ETFChatbotApp:
         """분석 요청 처리"""
         try:
             # ETF명 추출
-            etf_name = extract_etf_name(user_input.strip(), self.data['etf_info'])
+            etf_name = extract_etf_name_from_input(user_input.strip(), self.data['etf_info'])
             
             # ETF 분석 실행
             etf_info = analyze_etf(
@@ -338,14 +344,62 @@ class ETFChatbotApp:
             return f"분석 처리 중 오류가 발생했습니다: {str(e)}"
 
     def _extract_category_keyword(self, user_input: str) -> str:
-        """카테고리 키워드 추출"""
+        """
+        사용자 입력에서 카테고리 키워드 추출
+        
+        Args:
+            user_input: 사용자 입력 텍스트
+        
+        Returns:
+            추출된 카테고리 키워드 또는 빈 문자열
+        """
+        # ETF 관련 주요 키워드 정의
+        keywords = [
+            # 기술 관련
+            '반도체', 'AI', '인공지능', '메타버스', '블록체인', '클라우드',
+            # 바이오/헬스케어
+            '바이오', '생명공학', '헬스케어', '제약', '의료',
+            # 금융
+            '금융', '은행', '보험', '증권',
+            # 에너지/자원
+            '에너지', '태양광', '풍력', '원자재', '원유', '가스',
+            # 자동차/교통
+            '자동차', '전기차', '배터리', '모빌리티',
+            # 부동산
+            '부동산', 'REITs', '리츠',
+            # 채권
+            '채권', '국채', '기업채', '회사채',
+            # 원자재/통화
+            '금', '은', '달러', '엔화', '유로', '위안',
+            # 지역
+            '중국', '미국', '일본', '유럽', '신흥국', '한국',
+            # 투자 스타일
+            '배당', '성장', '가치', '소형주', '대형주', '중형주'
+        ]
+        
+        user_input_lower = user_input.lower()
+        for keyword in keywords:
+            if keyword in user_input_lower:
+                return keyword
+        
+        # ETF 패턴 매칭
+        import re
         etf_match = re.search(r'(.+?)\s*ETF', user_input)
         if etf_match:
             return etf_match.group(1).strip()
+        
         return ""
 
     def _extract_etf_names(self, user_input: str) -> List[str]:
-        """ETF명 추출"""
+        """
+        사용자 입력에서 ETF명 추출
+        
+        Args:
+            user_input: 사용자 입력 텍스트
+        
+        Returns:
+            추출된 ETF명 리스트 (최대 6개)
+        """
         compare_keywords = ["비교", "비교해줘", "비교해주세요", "vs", "대", "차이", "어떤게", "어느게"]
         
         # 구분자로 분리 시도
@@ -394,11 +448,11 @@ class ETFChatbotApp:
         if 'visualizations' not in comparison_result:
             return
         
-        st.subheader("📊 상세 비교 분석")
+        st.subheader("상세 비교 분석")
         
         # 비교 테이블
         if 'comparison_table' in comparison_result:
-            st.subheader("📋 비교 테이블")
+            st.subheader("비교 테이블")
             st.dataframe(comparison_result['comparison_table'], use_container_width=True)
         
         # 시각화

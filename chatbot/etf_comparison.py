@@ -17,9 +17,15 @@ import logging
 import os
 from typing import List, Dict, Any, Optional, Tuple
 
-from .etf_analysis import analyze_etf, normalize_etf_name, extract_etf_name, LEVEL_PROMPTS, safe_float
+# 공통 유틸리티 임포트
+from .etf_analysis import analyze_etf, LEVEL_PROMPTS
 from .recommendation_engine import ETFRecommendationEngine
 from .config import Config
+from .utils import (
+    normalize_etf_name, safe_float, format_percentage, 
+    format_aum, format_volume, validate_user_profile,
+    create_error_result, extract_etf_name_from_input
+)
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -56,15 +62,11 @@ class ETFComparison:
     
     def _load_cache(self):
         """캐시 데이터 로드"""
-        import time
-        start_time = time.time()
-        
         try:
             cache_path = self.config.get_data_path('cache')
             if os.path.exists(cache_path):
                 self.cache_df = pd.read_csv(cache_path, encoding='utf-8-sig')
-                elapsed_time = time.time() - start_time
-                logger.info(f"캐시 데이터 로드 완료: {len(self.cache_df)}개 레코드, {elapsed_time:.2f}초 소요")
+                logger.info(f"캐시 데이터 로드 완료: {len(self.cache_df)}개 레코드")
             else:
                 logger.warning("캐시 데이터 파일을 찾을 수 없습니다.")
                 self.cache_df = None
@@ -134,10 +136,7 @@ class ETFComparison:
         price_df: pd.DataFrame, 
         info_df: pd.DataFrame
     ) -> Tuple[List[Dict], List[str]]:
-        """멀티레이어 ETF 분석 (캐시 + 실시간)"""
-        import time
-        start_time = time.time()
-        
+        """ETF 분석"""
         scored_etfs = []
         valid_etfs = []
         
@@ -145,12 +144,11 @@ class ETFComparison:
         level = self._normalize_user_level(user_profile.get('level', 2))
         investor_type = user_profile.get('investor_type', 'ARSB')
         
-        logger.info(f"분석 시작: {len(etf_names)}개 ETF, 레벨={level}, 유형={investor_type}")
-        
         for etf_name in etf_names:
             try:
                 # ETF명 정규화
-                clean_name = extract_etf_name(etf_name, info_df)
+                clean_name = extract_etf_name_from_input(etf_name, info_df)
+                
                 if not clean_name:
                     logger.warning(f"ETF명을 찾을 수 없음: {etf_name}")
                     continue
@@ -208,8 +206,7 @@ class ETFComparison:
         for i, etf in enumerate(scored_etfs):
             etf['rank'] = i + 1
         
-        elapsed_time = time.time() - start_time
-        logger.info(f"ETF 분석 완료: {len(valid_etfs)}개 성공, {elapsed_time:.2f}초 소요")
+        logger.info(f"ETF 분석 완료: {len(valid_etfs)}개 성공")
         return scored_etfs, valid_etfs
 
     def _get_cache_data(self, etf_name: str, level: int, investor_type: str) -> Optional[Dict]:
@@ -245,11 +242,10 @@ class ETFComparison:
                     '총보수': cache_row['총보수']
                 }
             else:
-                logger.warning(f"캐시에서 ETF 데이터를 찾을 수 없음: {etf_name}")
                 return None
                 
         except Exception as e:
-            logger.error(f"캐시 데이터 조회 중 오류 - {etf_name}: {e}")
+            logger.error(f"캐시 데이터 조회 중 오류: {e}")
             return None
 
     def _calculate_fallback_scores(self, etf_data: Dict, user_profile: Dict) -> Dict:
@@ -298,11 +294,11 @@ class ETFComparison:
             return market_data
             
         except Exception as e:
-            logger.error(f"실시간 데이터 조회 중 오류 - {etf_name}: {e}")
+            logger.error(f"실시간 데이터 조회 중 오류: {e}")
             return None
 
     def _analyze_market_data_internal(self, price_df: pd.DataFrame, etf_code: str) -> Optional[Dict[str, Any]]:
-        """시세 데이터 분석 (내부 구현)"""
+        """시세 데이터 분석"""
         try:
             # ETF 시세 데이터 추출
             etf_prices = price_df[price_df['srtnCd'].astype(str) == str(etf_code)].copy()
@@ -357,18 +353,17 @@ class ETFComparison:
     # _get_official_data 메서드는 캐시에서 공식 데이터를 조회하므로 제거됨
 
     def _normalize_user_level(self, user_level: Any) -> int:
-        """사용자 레벨 정규화"""
-        if isinstance(user_level, int):
-            return user_level
-        elif isinstance(user_level, str):
-            # "level1", "Level 1", "1" 등 다양한 형태 처리
-            level_str = str(user_level).lower().replace('level', '').replace(' ', '')
-            try:
-                return int(level_str)
-            except ValueError:
-                return 2  # 기본값
-        else:
-            return 2  # 기본값
+        """
+        사용자 레벨 정규화 (기존 함수와의 호환성을 위해 유지)
+        
+        Args:
+            user_level: 사용자 레벨 (문자열 또는 숫자)
+        
+        Returns:
+            정규화된 레벨 (1, 2, 3)
+        """
+        validated_profile = validate_user_profile({'level': user_level})
+        return validated_profile['level']
     
 
     
@@ -439,31 +434,41 @@ class ETFComparison:
         return pd.DataFrame(table_data)
     
     def _format_percentage(self, value: Any, decimals: int = 2) -> str:
-        """퍼센트 값 포맷팅"""
-        if value is None:
-            return 'N/A'
-        try:
-            return f"{float(value):.{decimals}f}"
-        except (ValueError, TypeError):
-            return 'N/A'
+        """
+        퍼센트 값 포맷팅 (기존 함수와의 호환성을 위해 유지)
+        
+        Args:
+            value: 포맷팅할 값
+            decimals: 소수점 자릿수
+        
+        Returns:
+            포맷팅된 퍼센트 문자열
+        """
+        return format_percentage(value, decimals)
     
     def _format_aum(self, value: Any) -> str:
-        """자산규모 포맷팅 (억원 단위)"""
-        if value is None:
-            return 'N/A'
-        try:
-            return f"{float(value)/100:.0f}"
-        except (ValueError, TypeError):
-            return 'N/A'
+        """
+        자산규모 포맷팅 (기존 함수와의 호환성을 위해 유지)
+        
+        Args:
+            value: 자산규모 값
+        
+        Returns:
+            포맷팅된 AUM 문자열
+        """
+        return format_aum(value)
     
     def _format_volume(self, value: Any) -> str:
-        """거래량 포맷팅"""
-        if value is None:
-            return 'N/A'
-        try:
-            return f"{float(value):,.0f}"
-        except (ValueError, TypeError):
-            return 'N/A'
+        """
+        거래량 포맷팅 (기존 함수와의 호환성을 위해 유지)
+        
+        Args:
+            value: 거래량 값
+        
+        Returns:
+            포맷팅된 거래량 문자열
+        """
+        return format_volume(value)
     
     # =============================================================================
     # 시각화 생성
@@ -500,8 +505,6 @@ class ETFComparison:
             
             # 6. 비용 vs 성과 분석
             visualizations['cost_performance'] = self._create_cost_performance_chart(scored_etfs)
-            
-            logger.info(f"시각화 생성 완료: {len(visualizations)}개")
             
         except Exception as e:
             logger.error(f"시각화 생성 중 오류: {e}")
@@ -819,7 +822,7 @@ class ETFComparison:
         """에러 차트 생성"""
         fig = go.Figure()
         fig.add_annotation(
-            text=f"⚠️ {message}",
+            text=f"{message}",
             xref="paper", yref="paper",
             x=0.5, y=0.5,
             showarrow=False,
@@ -916,4 +919,4 @@ class ETFComparison:
         elif investor_type[-1] == 'E':
             characteristics.append("포트폴리오 튜닝 선호")
         
-        return characteristics 
+        return characteristics

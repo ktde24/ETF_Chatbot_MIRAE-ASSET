@@ -1,5 +1,5 @@
 """
-ETF RAG 챗봇 설정 파일
+ETF 챗봇 설정 파일
 - 투자자 유형별 가중치 설정
 - 시스템 프롬프트 관리
 - 파일 경로 중앙 관리
@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 # 환경변수 로드
 load_dotenv()
 
+# 레벨별 프롬프트 임포트
+from .etf_analysis import LEVEL_PROMPTS
+
 class Config:
     """ETF 챗봇 설정 클래스"""
     
@@ -20,7 +23,7 @@ class Config:
     # =============================================================================
     DATA_PATHS = {
         'etf_info': 'data/상품검색.csv',
-        'etf_prices': 'data/ETF_시세_데이터_20230101_20250721.csv',
+        'etf_prices': 'data/ETF_시세_데이터_20240101_20250729.csv',
         'etf_performance': 'data/수익률 및 총보수(기간).csv',
         'etf_aum': 'data/자산규모 및 유동성(기간).csv',
         'etf_reference': 'data/참고지수(기간).csv',
@@ -30,7 +33,7 @@ class Config:
     }
     
     # =============================================================================
-    # 투자자 유형별 가중치 설정 (16가지 조합)
+    # 투자자 유형별 가중치 설정
     # =============================================================================
     INVESTOR_TYPE_WEIGHTS = {
         # Auto-driven (A) 계열
@@ -90,15 +93,48 @@ class Config:
     # =============================================================================
     @classmethod
     def get_system_prompt(cls, user_profile: Dict[str, Any] = None) -> str:
-        """시스템 기본 프롬프트 생성"""
+        """
+        시스템 기본 프롬프트 생성
+        
+        Args:
+            user_profile: 사용자 프로필 (level, investor_type)
+        
+        Returns:
+            시스템 프롬프트 문자열
+        """
         base_prompt = """당신은 ETF 투자 전문 상담사입니다.
-사용자의 투자 레벨에 맞춰 맞춤형 답변을 제공하세요.
+사용자의 투자 레벨과 투자자 유형에 맞춰 맞춤형 답변을 제공하세요.
 
 답변 요구사항:
 - 공식 데이터(수익률, 보수, 자산규모, 거래량)와 시세 데이터(수익률, 변동성, 최대낙폭)를 모두 활용
 - 사용자 레벨에 맞는 어투와 깊이로 작성
 - 구체적인 수치와 근거 포함
-- 실전 투자 팁과 예시, 비유 포함"""
+- 실전 투자 팁과 예시, 비유 포함
+- 투자 위험 고지 포함
+
+투자자 유형별 특성:
+- A (Auto-driven): 자동 추천 선호, 간단한 설명
+- I (Investigator): 상세 분석 선호, 데이터 중심 설명
+- R (Risk-averse): 안전성 중시, 위험 관리 강조
+- E (Eager): 공격적 투자 선호, 성장성 중시
+- S (Story-driven): 투자 스토리와 배경 설명 선호
+- T (Technical): 기술적 분석과 차트 선호
+- B (Buy-and-hold): 장기 보유 전략 선호
+- P (Portfolio): 포트폴리오 조정과 분산 투자 선호
+
+레벨별 답변 스타일:
+- Level 1: 유치원/초등학생 수준, 비유와 예시 위주
+- Level 2: 중고등학생 수준, 핵심 개념과 이유 포함
+- Level 3: 투자 전문가 수준, 고급 분석과 실전 활용 관점"""
+        
+        if user_profile:
+            level = user_profile.get('level', 1)
+            investor_type = user_profile.get('investor_type', 'ARSB')
+            
+            level_prompt = LEVEL_PROMPTS.get(level, "")
+            investor_desc = cls.get_investor_type_description(investor_type)
+            
+            base_prompt += f"\n\n현재 사용자: Level {level}, {investor_desc}\n{level_prompt}"
         
         return base_prompt
     
