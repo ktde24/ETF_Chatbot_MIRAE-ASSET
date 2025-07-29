@@ -42,7 +42,6 @@ ETF_RAG_Chatbot/
 │   ├── recommendation_engine.py # ETF 추천 엔진
 │   ├── etf_comparison.py        # ETF 비교 분석 모듈
 │   ├── clova_client.py          # CLOVA LLM API 클라이언트
-│   └── vector_db/               # 벡터 데이터베이스 (향후 확장)
 ├── data/                        # ETF 데이터 파일들
 │   ├── 상품검색.csv
 │   ├── ETF_시세_데이터_*.csv
@@ -54,11 +53,8 @@ ETF_RAG_Chatbot/
 │   └── etf_scores_cache.csv
 ├── scripts/                     # 데이터 처리 스크립트
 │   ├── calculate_risk_tier.py
-│   ├── etf_data_distribution_analysis.py
 │   ├── fetch_etf_daily.py
 │   └── precompute_etf_scores.py
-├── docs/                        # 문서
-│   └── data_transformation_example.py
 ├── requirements.txt             # Python 의존성
 └── README.md                   # 프로젝트 설명서
 ```
