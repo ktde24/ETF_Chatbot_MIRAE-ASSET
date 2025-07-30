@@ -54,7 +54,8 @@ ETF_RAG_Chatbot/
 ├── scripts/                     # 데이터 처리 스크립트
 │   ├── calculate_risk_tier.py
 │   ├── fetch_etf_daily.py
-│   └── precompute_etf_scores.py
+│   ├── news_summary_sentiment_analysis.py # 감정 분석 및 뉴스 요약
+│   └── precompute_etf_scores.py   
 ├── requirements.txt             # Python 의존성
 └── README.md                   # 프로젝트 설명서
 ```
