@@ -100,23 +100,39 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. 데이터 준비
+### 2. 환경 변수 설정 (선택사항)
+```bash
+# 스크립트 실행용 API 키 환경 변수로 설정
+cp env.example .env
+
+# .env 파일을 편집하여 API 키 입력
+# PUBLIC_DATA_API_KEY=your_actual_public_data_api_key_here
+# DART_API_KEY=your_actual_dart_api_key_here
+# CLOVA_API_KEY=your_actual_clova_api_key_here (스크립트 실행 시)
+```
+
+### 3. 데이터 준비
 ```bash
 # ETF 데이터 파일들을 data/ 디렉토리에 배치
-# 캐시 데이터 생성 (선택)
+# 캐시 데이터 생성
 python scripts/precompute_etf_scores.py
 ```
 
-### 3. 애플리케이션 실행
+### 4. 애플리케이션 실행
 ```bash
 # Streamlit 앱 실행
 streamlit run app/main_app.py
 ```
 
-### 4. CLOVA API 설정
-- CLOVA LLM 서비스에서 API 키 발급
-- DART 금융감독원 서비스에서 API 키 발급
-- Streamlit 앱의 사이드바에서 API 키 입력
+### 5. API 키 발급 및 설정
+- **CLOVA LLM**: [NAVER CLOVA Studio]에서 API 키 발급
+  - Streamlit 앱 실행 후 사이드바에서 직접 입력
+  - 스크립트 실행 시에만 환경 변수로 설정: `python scripts/news_summary_sentiment_analysis.py`
+- **공공데이터포털 API**: [금융위원회 증권상품시세정보](https://www.data.go.kr/data/15094806/openapi.do)에서 API 키 발급
+  - ETF 시세 데이터 수집용 (환경 변수로 설정)
+- **DART API**: [금융감독원 DART](https://opendart.fss.or.kr/)에서 API 키 발급
+  - 기업공시 분석용 (환경 변수로 설정)
+
 
 ## 📊 데이터 구조
 
@@ -156,7 +172,7 @@ ETF 추천 엔진:
 
 ### etf_comparison.py
 다중 ETF 비교 분석:
-- **하이브리드 분석**: 캐시 + 실시간 데이터 조합
+- **분석**: 캐시 + 실시간 데이터 조합
 - **종합 점수 계산**: 위험-수익률, 비용 효율성 등
 - **다양한 시각화**: 바차트, 산점도, 레이더차트, 히트맵
 - **실시간 비교**: 최대 6개 ETF 동시 비교

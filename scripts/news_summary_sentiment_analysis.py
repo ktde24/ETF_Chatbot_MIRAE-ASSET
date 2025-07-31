@@ -5,8 +5,13 @@ import requests
 import uuid
 import json
 import http.client
+import os
 from bs4 import BeautifulSoup
 from IPython.display import display
+from dotenv import load_dotenv
+
+# 환경 변수 로드
+load_dotenv()
 
 # ── 레벨별 스타일 프롬프트 ───────────────────────────────────
 LEVEL_PROMPTS = {
@@ -100,9 +105,16 @@ if __name__ == "__main__":
     display(headlines_df)
 
     # 3) 감성분석
+    import os
+    clova_api_key = os.getenv("CLOVA_API_KEY")
+    if not clova_api_key:
+        print("경고: CLOVA_API_KEY 환경 변수가 설정되지 않았습니다.")
+        print("환경 변수를 설정하거나 .env 파일에 추가하세요.")
+        exit(1)
+    
     chat = CompletionExecutor(
         host='https://clovastudio.stream.ntruss.com',
-        api_key='Bearer nv-714909116c8e4e60810d679d91ad6375QgFx'
+        api_key=f'Bearer {clova_api_key}'
     )
     sentiments = []
     for title in headlines_df['headline']:

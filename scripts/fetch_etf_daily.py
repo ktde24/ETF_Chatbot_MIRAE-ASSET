@@ -1,11 +1,11 @@
 """
 ETF 일별 시세 데이터 수집 스크립트
-- 금융감독원 API를 통해 ETF 일별 시세 데이터 수집
+- 금융위원회 증권상품시세정보 API를 통해 ETF 일별 시세 데이터 수집
 - 시작일자와 종료일자를 설정하여 기간별 데이터 수집 가능
 - CSV 형태로 저장하여 분석 시스템에서 활용
 
 주요 기능:
-1. 금융감독원 API 호출 (GetSecuritiesProductInfoService)
+1. 금융위원회 API 호출 (증권상품시세정보 - ETF 시세)
 2. ETF 일별 시세 데이터 수집 (기간 설정 가능)
 3. XML 응답을 DataFrame으로 변환
 4. CSV 파일로 저장
@@ -20,8 +20,7 @@ ETF 일별 시세 데이터 수집 스크립트
     data/ETF_시세_데이터_YYYYMMDD_YYYYMMDD.csv - 기간별 ETF 시세 데이터
 
 참고:
-    - API 키는 금융감독원에서 발급 필요
-    - 일일 호출 한도가 있으므로 주의
+    - API 키는 공공데이터포털에서 발급 필요 (https://www.data.go.kr/data/15094806/openapi.do)
     - 데이터는 영업일 기준으로 제공됨
 """
 
@@ -32,13 +31,22 @@ import pandas as pd
 import os
 import argparse
 import time
+from dotenv import load_dotenv
+
+# 환경 변수 로드
+load_dotenv()
 
 # =============================================================================
 # 설정 파라미터
 # =============================================================================
 
-# 금융감독원 API 서비스 키
-service_key = "PVWgyUsGMr0eCrvYf15QhIWXdFgAdGLC0tKclMRmzGv3Ou9lJ0FgCFl+8fg/JfDgs6uQrJnaIKp1NjMEf+T65A=="
+# 금융위원회 증권상품시세정보 API 서비스 키
+service_key = os.getenv("PUBLIC_DATA_API_KEY")
+if not service_key:
+    print("경고: PUBLIC_DATA_API_KEY 환경 변수가 설정되지 않았습니다.")
+    print("환경 변수를 설정하거나 .env 파일에 추가하세요.")
+    print("API 키 발급: https://www.data.go.kr/data/15094806/openapi.do")
+    exit(1)
 
 # ETF 시세 정보 API 엔드포인트
 url = "http://apis.data.go.kr/1160100/service/GetSecuritiesProductInfoService/getETFPriceInfo"
