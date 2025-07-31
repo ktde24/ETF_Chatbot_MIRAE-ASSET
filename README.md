@@ -28,6 +28,12 @@ ETF 투자 전문 상담 챗봇으로, 사용자의 투자 레벨과 투자자 �
 - **맞춤형 답변**: 투자자 유형별 특성 반영
 - **실시간 분석**: 사용자 질의에 따른 즉시 분석 제공
 
+### 📜 기업공시 분석
+- **공시목록 조회**: DART API를 통한 최신·과거 공시 리스트 불러오기
+- **공시 전문 파싱**: HTML → 텍스트 추출 및 주요 항목(제목, 작성일, 주요 내용) 정제
+- **투자자 관점 요약**: 공시 핵심 포인트 자동 요약 및 영향도 평가
+- **이슈 알림**: 신규·중요 공시 발생 시 챗봇 알림 기능
+
 ## 🏗️ 프로젝트 구조
 
 ```
@@ -51,6 +57,15 @@ ETF_RAG_Chatbot/
 │   ├── 투자위험(기간).csv
 │   ├── etf_re_bp_simplified.csv
 │   └── etf_scores_cache.csv
+├── dart_api/                         # DART 공시 가져오기 유틸리티
+│   ├── utils/
+│   │   │── clovax.py     #CLOVAX 문서파싱 api
+│   │   │── text_extractor.py
+│   ├── corpcode_loader.py
+│   ├── CORPCODE.xml
+│   ├── dart_api.py    #가업공시자료 크롤링 로직
+│   ├── main.py
+│   └── .env.example                   # 환경변수 예시
 ├── scripts/                     # 데이터 처리 스크립트
 │   ├── calculate_risk_tier.py
 │   ├── fetch_etf_daily.py
@@ -100,6 +115,7 @@ streamlit run app/main_app.py
 
 ### 4. CLOVA API 설정
 - CLOVA LLM 서비스에서 API 키 발급
+- DART 금융감독원 서비스에서 API 키 발급
 - Streamlit 앱의 사이드바에서 API 키 입력
 
 ## 📊 데이터 구조
@@ -111,7 +127,8 @@ streamlit run app/main_app.py
 - **자산규모 및 유동성(기간).csv**: AUM, 거래량 등 유동성 지표
 - **참고지수(기간).csv**: ETF 기초지수 정보
 - **투자위험(기간).csv**: 위험도 지표
-- **etf_scores_cache.csv**: 사전 계산된 ETF 점수 
+- **etf_scores_cache.csv**: 사전 계산된 ETF 점수
+- **CORPCODE.xml**: 기업코드
 
 ## 🔧 주요 모듈 설명
 
@@ -163,5 +180,6 @@ ETF 추천 엔진:
 2. **ETF 추천**: "반도체 ETF 추천해줘"
 3. **ETF 비교**: "KODEX 반도체 vs TIGER 반도체 비교해줘"
 4. **카테고리 추천**: "AI 관련 ETF 추천해줘"
+5. **기업공시자료 요약 및 해석**: "삼성전자 최근 일주일 공시자료 알려줘"
 
 
